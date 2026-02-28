@@ -32,13 +32,29 @@ config:
               names:
                 - online-boutique
         pipeline_stages:
-          - docker: {}
+          # VKE 使用 containerd/CRI，需用 cri 解析器
+          - cri: {}
           - match:
               selector: '{app=~".+"}'
               stages:
                 - static_labels:
                     namespace: online-boutique
         relabel_configs:
+          # 排除已删除的 Pod
+          - action: drop
+            source_labels: [__meta_kubernetes_pod_deleted]
+            regex: "true"
+          # 排除非运行中的 Pod
+          - action: drop
+            source_labels: [__meta_kubernetes_pod_phase]
+            regex: "Pending|Succeeded|Failed"
+          # 提取日志文件路径 (containerd 标准路径)
+          - source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            regex: '(.+);(.+)'
+            replacement: '/var/log/pods/*$1/$2/*.log'
+            target_label: __path__
           # 保留 Pod 标签
           - source_labels: [__meta_kubernetes_pod_label_app]
             target_label: app
@@ -48,18 +64,6 @@ config:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_container_name]
             target_label: container
-          # 排除已删除的 Pod
-          - action: drop
-            source_labels: [__meta_kubernetes_pod_deleted]
-            regex: "true"
-
-    extraClientConfigs: |
-      # 批量发送配置
-      batchwait: 1s
-      batchsize: 102400
-
-      # 超时配置
-      timeout: 10s
 
 # ===========================================
 # 资源配置

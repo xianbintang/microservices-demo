@@ -19,16 +19,16 @@ googleCloudOperations:
 
 # 火山引擎 APM Plus 配置
 volcengineAPM:
-  enabled: true
+  enabled: false
   endpoint: "apmplus-cn-shanghai.volces.com:4317"
   appKey: "76b9dba29c1c7de06a5a8f646d2b19d7"
   compression: gzip
   insecure: true
 
-# 自建可观测性栈配置 (与 volcengineAPM 互斥)
-# 切换时将 volcengineAPM.enabled 改为 false，selfHostedObservability.enabled 改为 true
+# 自建可观测性栈配置
 selfHostedObservability:
-  enabled: false
+  enabled: true
+  imagePullSecret: volc-registry-secret
   collectorName: otel-collector-self
   prometheusRemoteWrite:
     endpoint: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/write"
@@ -37,6 +37,7 @@ selfHostedObservability:
     insecure: true
   loki:
     endpoint: "http://loki.monitoring.svc:3100/loki/api/v1/push"
+    otlpEndpoint: "http://loki.monitoring.svc:3100/otlp"
   resources:
     requests:
       cpu: 100m

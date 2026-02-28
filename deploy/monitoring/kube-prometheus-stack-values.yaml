@@ -87,8 +87,21 @@ prometheus:
     ruleNamespaceSelector: {}
     ruleSelector: {}
 
-    # 额外抓取配置 (可选)
-    additionalScrapeConfigs: []
+    # 额外抓取配置 - 抓取 VKE 平台自带的 node-exporter（已占用 hostPort 9100）
+    additionalScrapeConfigs:
+      - job_name: 'node-exporter-vke'
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          # 将节点地址替换为 :9100
+          - source_labels: [__address__]
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:9100'
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: instance
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
 
 # ===========================================
 # Grafana 配置
@@ -341,7 +354,8 @@ kube-state-metrics:
 # node-exporter 配置
 # ===========================================
 nodeExporter:
-  enabled: true
+  # 禁用内置 node-exporter，VKE 平台已在 kube-system 部署 prometheus-agent-node-exporter
+  enabled: false
 
 prometheus-node-exporter:
   image:

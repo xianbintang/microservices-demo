@@ -53,6 +53,10 @@ spec:
       {{- else }}
       serviceAccountName: default
       {{- end }}
+      {{- if .Values.selfHostedObservability.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.selfHostedObservability.imagePullSecret }}
+      {{- end }}
       {{- if .Values.securityContext.enable }}
       securityContext:
         fsGroup: 1000
@@ -158,19 +162,33 @@ data:
         timeout: 1s
         send_batch_size: 1024
 
-      # 资源属性，添加服务名称等
+      # 资源属性，添加 service.namespace
       resource:
         attributes:
           - key: service.namespace
             value: {{ .Release.Namespace }}
             action: upsert
 
-      # 属性处理（确保 service.name 正确）
-      attributes:
-        actions:
-          - key: service.name
-            from_attribute: OTEL_SERVICE_NAME
-            action: upsert
+    # spanmetrics connector：从 Trace Span 生成 RED 指标，发送到 Prometheus
+    connectors:
+      spanmetrics:
+        namespace: traces.spanmetrics
+        histogram:
+          explicit:
+            buckets: [10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1000ms, 2500ms, 5000ms, 10000ms]
+        dimensions:
+          - name: http.method
+          - name: http.response_status_code
+          - name: http.route
+          - name: rpc.method
+          - name: rpc.service
+          - name: rpc.grpc.status_code
+        exemplars:
+          enabled: true
+        metrics_flush_interval: 15s
+        resource_metrics_key_attributes:
+          - service.name
+          - service.namespace
 
     exporters:
       # 调试导出器（用于排查问题，默认关闭）
@@ -180,9 +198,14 @@ data:
       # 导出到 Prometheus (remote_write)
       prometheusremotewrite:
         endpoint: "{{ .Values.selfHostedObservability.prometheusRemoteWrite.endpoint }}"
+        # 将 OTLP 资源属性转换为 Prometheus 标签 (service.name → service_name)
+        resource_to_telemetry_conversion:
+          enabled: true
+        # 添加 namespace 标签，便于 Grafana 按命名空间过滤
+        external_labels:
+          namespace: {{ .Release.Namespace }}
         tls:
           insecure: true
-        # 添加默认标签
         add_metric_suffixes: true
 
       # 导出到 Tempo (OTLP)
@@ -192,29 +215,16 @@ data:
           insecure: {{ .Values.selfHostedObservability.tempo.insecure }}
         compression: gzip
 
-      # 导出到 Loki
-      loki:
-        endpoint: "{{ .Values.selfHostedObservability.loki.endpoint }}"
-        default_labels_enabled:
-          exporter: false
-          attributes: true
-        # 从资源属性中提取标签
-        labels:
-          resource:
-            - service.name
-            - service.namespace
-          attributes:
-            - trace_id
-            - span_id
+      # 导出到 Loki (via OTLP HTTP，loki exporter 在 0.83+ 已移除)
+      otlphttp/loki:
+        endpoint: "{{ .Values.selfHostedObservability.loki.otlpEndpoint }}"
+        tls:
+          insecure: true
 
     extensions:
       # 健康检查
       health_check:
         endpoint: 0.0.0.0:13133
-
-      # 性能分析（可选）
-      pprof:
-        endpoint: 0.0.0.0:1777
 
     service:
       extensions:
@@ -222,22 +232,23 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
-          exporters: [otlp/tempo]
+          processors: [memory_limiter, resource, batch]
+          # spanmetrics 作为 exporter 接收 spans 并生成 metrics
+          exporters: [otlp/tempo, spanmetrics]
         metrics:
-          receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
+          # spanmetrics 作为 receiver 将生成的 metrics 注入此 pipeline
+          receivers: [otlp, spanmetrics]
+          processors: [memory_limiter, batch]
           exporters: [prometheusremotewrite]
         logs:
           receivers: [otlp]
           processors: [memory_limiter, batch, resource]
-          exporters: [loki]
+          exporters: [otlphttp/loki]
       telemetry:
         logs:
           level: info
         metrics:
           level: basic
-          address: 0.0.0.0:8888
 {{- if .Values.networkPolicies.create }}
 ---
 apiVersion: networking.k8s.io/v1

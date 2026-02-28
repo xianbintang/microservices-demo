@@ -31,15 +31,19 @@ tempo:
         store: memberlist
 
   # Querier 配置
+  # 单体模式下 querier 和 query-frontend 在同一进程，用 localhost:9095 连接
   querier:
     frontend_worker:
-      frontend_address: tempo-query-frontend:9095
+      frontend_address: localhost:9095
+    max_concurrent_queries: 20
 
   # Query Frontend 配置
   queryFrontend:
     search:
-      concurrent_jobs: 1000
+      concurrent_jobs: 2000
       max_duration: 168h
+      # 增大每个 job 处理的最大字节数，减少拆分次数
+      target_bytes_per_job: 104857600  # 100MB
 
   # Distributor 配置
   distributor:
@@ -62,6 +66,11 @@ tempo:
         path: /var/tempo/traces
       wal:
         path: /var/tempo/wal
+      # 启用 snappy 压缩：减少 50~70% 磁盘 I/O，显著提升查询速度
+      block:
+        encoding: snappy
+        bloom_filter_false_positive: 0.05
+        bloom_filter_shard_size_bytes: 100000
 
   # Memberlist 配置
   memberlist:
@@ -81,11 +90,14 @@ singleBinary:
   replicas: 1
   resources:
     requests:
-      cpu: 200m
-      memory: 256Mi
-    limits:
-      cpu: 1000m
+      cpu: 500m
       memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  extraEnv:
+    - name: GOMEMLIMIT
+      value: "1800MiB"
   persistence:
     enabled: false
 
