@@ -47,10 +47,47 @@ opentelemetryCollector:
   # Specifies the project id for the otel collector. If set as "PROJECT_ID" (default value), an initContainer will automatically retrieve the project id value from the metadata server.
   projectId: "PROJECT_ID"
 
+# 火山引擎 APM Plus 配置
+volcengineAPM:
+  enabled: false
+  # APM Plus OTLP 接入点
+  endpoint: "apmplus-cn-shanghai.volces.com:4317"
+  # AppKey 从火山引擎 APM Plus 控制台获取
+  appKey: ""
+  # 是否启用压缩
+  compression: gzip
+  # 是否启用 TLS (开发环境可设为 false)
+  insecure: true
+
 googleCloudOperations:
   profiler: false
   tracing: false
   metrics: false
+
+# 自建可观测性栈配置
+# 与 volcengineAPM 互斥，或双写用于验证
+selfHostedObservability:
+  enabled: false
+  # 自建 OTEL Collector 名称
+  collectorName: otel-collector-self
+  # Prometheus remote_write 地址
+  prometheusRemoteWrite:
+    endpoint: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/write"
+  # Tempo OTLP 地址
+  tempo:
+    endpoint: "tempo.monitoring.svc:4317"
+    insecure: true
+  # Loki 地址
+  loki:
+    endpoint: "http://loki.monitoring.svc:3100/loki/api/v1/push"
+  # Collector 资源配置
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
 seccompProfile:
   enable: false
@@ -218,3 +255,40 @@ cartDatabase:
 shoppingAssistantService:
   create: false
   name: shoppingassistantservice
+
+# SRE Agent Configuration
+sreAgent:
+  create: true
+  name: sre-agent
+  namespace: sre-agent
+  image:
+    repository: sre-agent
+    tag: latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  # Enable leader election for HA deployment
+  leaderElection:
+    enabled: true
+  # Prometheus metrics endpoint
+  metrics:
+    port: 8080
+  # Health check endpoint
+  healthCheck:
+    port: 8081
+  # Prometheus server URL for querying metrics
+  prometheus:
+    url: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090"
+  # Chaos Mesh integration
+  chaosMesh:
+    enabled: true
+    namespace: chaos-mesh
+  # OpenTelemetry integration
+  openTelemetry:
+    enabled: false
+    endpoint: "otel-collector.monitoring.svc:4317"

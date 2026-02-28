@@ -1,0 +1,144 @@
+# 钉钉 Webhook 适配器部署
+# 将 AlertManager Webhook 格式转换为钉钉消息格式
+# 需要先在钉钉群组中创建机器人并获取 Webhook Token
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dingtalk-webhook
+  namespace: monitoring
+  labels:
+    app: dingtalk-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dingtalk-webhook
+  template:
+    metadata:
+      labels:
+        app: dingtalk-webhook
+    spec:
+      imagePullSecrets:
+        - name: volc-registry-secret
+      containers:
+      - name: webhook
+        image: microservices-demo-cn-shanghai.cr.volces.com/microservices-demo/microservices-demo/prometheus-webhook-dingtalk:v2.1.0
+        args:
+        - --web.listen-address=:8060
+        - --config.file=/config/config.yaml
+        ports:
+        - containerPort: 8060
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 8060
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 8060
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: dingtalk-webhook-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dingtalk-webhook
+  namespace: monitoring
+  labels:
+    app: dingtalk-webhook
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8060
+    targetPort: 8060
+    name: http
+  selector:
+    app: dingtalk-webhook
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dingtalk-webhook-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    templates:
+      - /config/template.tmpl
+
+    targets:
+      # 默认告警通道
+      warning:
+        url: https://oapi.dingtalk.com/robot/send?access_token=YOUR_DINGTALK_TOKEN_HERE
+        secret: YOUR_DINGTALK_SECRET_HERE
+
+      # 严重告警通道 (需要单独创建钉钉机器人)
+      critical:
+        url: https://oapi.dingtalk.com/robot/send?access_token=YOUR_DINGTALK_TOKEN_HERE
+        secret: YOUR_DINGTALK_SECRET_HERE
+
+      # online-boutique 专用通道
+      online-boutique:
+        url: https://oapi.dingtalk.com/robot/send?access_token=YOUR_DINGTALK_TOKEN_HERE
+        secret: YOUR_DINGTALK_SECRET_HERE
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dingtalk-webhook-template
+  namespace: monitoring
+data:
+  template.tmpl: |
+    {{ define "__subject" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+    {{ end }}
+
+    {{ define "__alert_list" }}{{ range . }}
+    ---
+    **告警名称**: {{ .Labels.alertname }}
+    **严重级别**: {{ .Labels.severity }}
+    **服务**: {{ .Labels.service | default "N/A" }}
+    **描述**: {{ .Annotations.description }}
+    **开始时间**: {{ .StartsAt.Format "2006-01-02 15:04:05" }}
+    {{ end }}{{ end }}
+
+    {{ define "__resolved_list" }}{{ range . }}
+    ---
+    **告警名称**: {{ .Labels.alertname }}
+    **服务**: {{ .Labels.service | default "N/A" }}
+    **恢复时间**: {{ .EndsAt.Format "2006-01-02 15:04:05" }}
+    {{ end }}{{ end }}
+
+    {{ define "dingtalk.default.message" }}
+    {{ if eq .Status "firing" }}
+    ## 🚨 告警通知
+    {{ template "__alert_list" .Alerts.Firing }}
+    {{ else if eq .Status "resolved" }}
+    ## ✅ 告警恢复
+    {{ template "__resolved_list" .Alerts.Resolved }}
+    {{ end }}
+    {{ end }}
+---
+# 使用说明:
+# 1. 在钉钉群组中创建自定义机器人
+# 2. 安全设置选择"加签"，获取 Secret
+# 3. 获取 Webhook URL 中的 access_token
+# 4. 修改上述 ConfigMap 中的 URL 和 Secret
+# 5. 重启 dingtalk-webhook Pod: kubectl rollout restart deploy/dingtalk-webhook -n monitoring

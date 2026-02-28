@@ -1,0 +1,117 @@
+# Promtail Helm Chart Values
+# DaemonSet 模式部署在每个节点上，采集 Pod 日志
+# 镜像仓库: microservices-demo-cn-shanghai.cr.volces.com/microservices-demo/microservices-demo
+
+# ===========================================
+# 镜像配置
+# ===========================================
+image:
+  registry: microservices-demo-cn-shanghai.cr.volces.com
+  repository: microservices-demo/microservices-demo/promtail
+  tag: "3.5.1"
+
+imagePullSecrets:
+  - name: volc-registry-secret
+
+# ===========================================
+# Promtail 配置
+# ===========================================
+config:
+  # 客户端配置 (loki auth_enabled: false)
+  clients:
+    - url: http://loki.monitoring.svc:3100/loki/api/v1/push
+
+  # 服务发现和抓取配置
+  snippets:
+    scrapeConfigs: |
+      # 采集 Kubernetes Pod 日志
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - online-boutique
+        pipeline_stages:
+          - docker: {}
+          - match:
+              selector: '{app=~".+"}'
+              stages:
+                - static_labels:
+                    namespace: online-boutique
+        relabel_configs:
+          # 保留 Pod 标签
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          # 排除已删除的 Pod
+          - action: drop
+            source_labels: [__meta_kubernetes_pod_deleted]
+            regex: "true"
+
+    extraClientConfigs: |
+      # 批量发送配置
+      batchwait: 1s
+      batchsize: 102400
+
+      # 超时配置
+      timeout: 10s
+
+# ===========================================
+# 资源配置
+# ===========================================
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# ===========================================
+# 服务配置
+# ===========================================
+service:
+  type: ClusterIP
+
+# ===========================================
+# DaemonSet 配置
+# ===========================================
+daemonset:
+  # 更新策略
+  updateStrategy:
+    type: RollingUpdate
+
+  # 容忍配置 (确保在所有节点运行)
+  tolerations:
+    - key: node-role.kubernetes.io/master
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/control-plane
+      effect: NoSchedule
+
+# ===========================================
+# 挂载配置
+# ===========================================
+# 默认已包含 /var/lib/docker/containers 和 /var/log/pods，无需额外配置
+extraVolumes: []
+extraVolumeMounts: []
+
+# ===========================================
+# Security Context
+# ===========================================
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+
+# ===========================================
+# 监控配置
+# ===========================================
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack

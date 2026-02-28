@@ -1,0 +1,230 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# 火山引擎 APM Plus OpenTelemetry Collector
+# 用于收集微服务的 Traces 和 Metrics，并导出到火山引擎 APM Plus
+
+{{- if .Values.volcengineAPM.enabled }}
+{{- if .Values.serviceAccounts.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-volc
+  namespace: {{.Release.Namespace}}
+  {{- if not .Values.serviceAccounts.annotationsOnlyForCartservice }}
+  {{- with .Values.serviceAccounts.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector-volc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector-volc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector-volc
+  template:
+    metadata:
+      labels:
+        app: otel-collector-volc
+    spec:
+      {{- if .Values.serviceAccounts.create }}
+      serviceAccountName: otel-collector-volc
+      {{- else }}
+      serviceAccountName: default
+      {{- end }}
+      {{- if .Values.securityContext.enable }}
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        {{- if .Values.seccompProfile.enable }}
+        seccompProfile:
+          type: {{ .Values.seccompProfile.type }}
+        {{- end }}
+      {{- end }}
+      containers:
+      - name: otel-collector
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+        image: {{ .Values.images.repository }}/opentelemetry-collector-contrib:0.144.0
+        args:
+        - --config=/conf/collector-config.yaml
+        ports:
+        - name: grpc-otlp
+          containerPort: 4317
+          protocol: TCP
+        - name: http-otlp
+          containerPort: 4318
+          protocol: TCP
+        volumeMounts:
+        - name: collector-config
+          mountPath: /conf
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      volumes:
+      - name: collector-config
+        configMap:
+          name: otel-collector-volc-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-volc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector-volc
+spec:
+  ports:
+  - name: grpc-otlp
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: http-otlp
+    port: 4318
+    protocol: TCP
+    targetPort: 4318
+  selector:
+    app: otel-collector-volc
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-volc-config
+  namespace: {{ .Release.Namespace }}
+data:
+  collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # 批量处理，提高吞吐量
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+      # 资源属性，添加服务名称等
+      resource:
+        attributes:
+          - key: service.namespace
+            value: {{ .Release.Namespace }}
+            action: upsert
+
+    exporters:
+      # 导出到火山引擎 APM Plus
+      otlp/volcengine:
+        endpoint: {{ .Values.volcengineAPM.endpoint }}
+        compression: {{ .Values.volcengineAPM.compression }}
+        headers:
+          X-ByteAPM-AppKey: {{ .Values.volcengineAPM.appKey }}
+        {{- if .Values.volcengineAPM.insecure }}
+        tls:
+          insecure: true
+        {{- end }}
+      # 调试导出器（可选，用于排查问题）
+      # debug:
+      #   verbosity: basic
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [otlp/volcengine]
+        metrics:
+          receivers: [otlp]
+          processors: [batch, resource]
+          exporters: [otlp/volcengine]
+{{- if .Values.networkPolicies.create }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-volc
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector-volc
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.adService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.cartService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.checkoutService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.currencyService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.emailService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.frontend.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.loadGenerator.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.paymentService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.productCatalogService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.recommendationService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.shippingService.name }}
+    ports:
+     - port: 4317
+       protocol: TCP
+     - port: 4318
+       protocol: TCP
+  egress:
+  - {}
+{{- end }}
+{{- end }}

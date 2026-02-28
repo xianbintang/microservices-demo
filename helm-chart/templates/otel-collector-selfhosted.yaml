@@ -1,0 +1,321 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# 自建可观测性栈 OpenTelemetry Collector
+# 用于收集微服务的 Traces、Metrics、Logs，并导出到自建后端
+# 与 volcengineAPM 互斥，或双写用于验证
+
+{{- if .Values.selfHostedObservability.enabled }}
+{{- if .Values.serviceAccounts.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-self
+  namespace: {{.Release.Namespace}}
+  {{- if not .Values.serviceAccounts.annotationsOnlyForCartservice }}
+  {{- with .Values.serviceAccounts.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector-self
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector-self
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector-self
+  template:
+    metadata:
+      labels:
+        app: otel-collector-self
+    spec:
+      {{- if .Values.serviceAccounts.create }}
+      serviceAccountName: otel-collector-self
+      {{- else }}
+      serviceAccountName: default
+      {{- end }}
+      {{- if .Values.securityContext.enable }}
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        {{- if .Values.seccompProfile.enable }}
+        seccompProfile:
+          type: {{ .Values.seccompProfile.type }}
+        {{- end }}
+      {{- end }}
+      containers:
+      - name: otel-collector
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+        image: {{ .Values.images.repository }}/opentelemetry-collector-contrib:0.144.0
+        args:
+        - --config=/conf/collector-config.yaml
+        ports:
+        - name: grpc-otlp
+          containerPort: 4317
+          protocol: TCP
+        - name: http-otlp
+          containerPort: 4318
+          protocol: TCP
+        volumeMounts:
+        - name: collector-config
+          mountPath: /conf
+        resources:
+          requests:
+            cpu: {{ .Values.selfHostedObservability.resources.requests.cpu }}
+            memory: {{ .Values.selfHostedObservability.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.selfHostedObservability.resources.limits.cpu }}
+            memory: {{ .Values.selfHostedObservability.resources.limits.memory }}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: collector-config
+        configMap:
+          name: otel-collector-self-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-self
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: otel-collector-self
+spec:
+  ports:
+  - name: grpc-otlp
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: http-otlp
+    port: 4318
+    protocol: TCP
+    targetPort: 4318
+  selector:
+    app: otel-collector-self
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-self-config
+  namespace: {{ .Release.Namespace }}
+data:
+  collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # 内存限制，防止 OOM
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+        spike_limit_mib: 100
+
+      # 批量处理，提高吞吐量
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+
+      # 资源属性，添加服务名称等
+      resource:
+        attributes:
+          - key: service.namespace
+            value: {{ .Release.Namespace }}
+            action: upsert
+
+      # 属性处理（确保 service.name 正确）
+      attributes:
+        actions:
+          - key: service.name
+            from_attribute: OTEL_SERVICE_NAME
+            action: upsert
+
+    exporters:
+      # 调试导出器（用于排查问题，默认关闭）
+      # debug:
+      #   verbosity: detailed
+
+      # 导出到 Prometheus (remote_write)
+      prometheusremotewrite:
+        endpoint: "{{ .Values.selfHostedObservability.prometheusRemoteWrite.endpoint }}"
+        tls:
+          insecure: true
+        # 添加默认标签
+        add_metric_suffixes: true
+
+      # 导出到 Tempo (OTLP)
+      otlp/tempo:
+        endpoint: "{{ .Values.selfHostedObservability.tempo.endpoint }}"
+        tls:
+          insecure: {{ .Values.selfHostedObservability.tempo.insecure }}
+        compression: gzip
+
+      # 导出到 Loki
+      loki:
+        endpoint: "{{ .Values.selfHostedObservability.loki.endpoint }}"
+        default_labels_enabled:
+          exporter: false
+          attributes: true
+        # 从资源属性中提取标签
+        labels:
+          resource:
+            - service.name
+            - service.namespace
+          attributes:
+            - trace_id
+            - span_id
+
+    extensions:
+      # 健康检查
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+      # 性能分析（可选）
+      pprof:
+        endpoint: 0.0.0.0:1777
+
+    service:
+      extensions:
+        - health_check
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [prometheusremotewrite]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [loki]
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          level: basic
+          address: 0.0.0.0:8888
+{{- if .Values.networkPolicies.create }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-self
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector-self
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 允许所有微服务发送数据
+  - from:
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.adService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.cartService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.checkoutService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.currencyService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.emailService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.frontend.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.loadGenerator.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.paymentService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.productCatalogService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.recommendationService.name }}
+    - podSelector:
+        matchLabels:
+          app: {{ .Values.shippingService.name }}
+    ports:
+     - port: 4317
+       protocol: TCP
+     - port: 4318
+       protocol: TCP
+  egress:
+  # 允许访问 monitoring namespace 的后端服务
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - port: 9090  # Prometheus
+      protocol: TCP
+    - port: 4317  # Tempo OTLP
+      protocol: TCP
+    - port: 3100  # Loki
+      protocol: TCP
+  # 允许 DNS 解析
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+{{- end }}
+{{- end }}
