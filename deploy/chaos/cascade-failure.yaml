@@ -1,38 +1,90 @@
----
+# Cascade Failure Experiment Template
+# 测试多个故障同时发生时的系统弹性和隔离能力
+
+# 故障 1: adservice Pod 故障
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
-  name: cascade-pod-kill-adservice
+  name: cascade-pod-failure-adservice
   namespace: monitoring
   labels:
     chaos.mes.org/type: cascade-failure
-    chaos.mes.org/part: "part1"
+    chaos.mes.org/namespace: online-boutique
+    chaos.mes.org/cascade-id: "default"
+    chaos.mes.org/fault-order: "1"
+  annotations:
+    chaos.mes.org/description: "Cascade failure - adservice pod kill"
+    chaos.mes.org/observability: "enable"
 spec:
   action: pod-kill
   mode: one
-  value: "1"
-  duration: "2m"
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
       app: adservice
+  duration: "2m"
+
 ---
+# 故障 2: recommendationservice 网络延迟
 apiVersion: chaos-mesh.org/v1alpha1
-kind: PodChaos
+kind: NetworkChaos
 metadata:
-  name: cascade-pod-kill-currency
+  name: cascade-network-latency-recommendation
   namespace: monitoring
   labels:
     chaos.mes.org/type: cascade-failure
-    chaos.mes.org/part: "part2"
+    chaos.mes.org/namespace: online-boutique
+    chaos.mes.org/cascade-id: "default"
+    chaos.mes.org/fault-order: "2"
+  annotations:
+    chaos.mes.org/description: "Cascade failure - recommendationservice network delay"
+    chaos.mes.org/observability: "enable"
 spec:
-  action: pod-kill
+  action: delay
   mode: one
-  value: "1"
-  duration: "2m"
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
-      app: currencyservice
+      app: recommendationservice
+  delay:
+    latency: "500ms"
+    jitter: "50ms"
+  direction: to
+  duration: "3m"
+
+---
+# 故障 3: checkoutservice 内存压力
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cascade-memory-stress-checkout
+  namespace: monitoring
+  labels:
+    chaos.mes.org/type: cascade-failure
+    chaos.mes.org/namespace: online-boutique
+    chaos.mes.org/cascade-id: "default"
+    chaos.mes.org/fault-order: "3"
+  annotations:
+    chaos.mes.org/description: "Cascade failure - checkoutservice memory stress"
+    chaos.mes.org/observability: "enable"
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - online-boutique
+    labelSelectors:
+      app: checkoutservice
+  stressors:
+    memory:
+      size: "80%"
+  duration: "4m"
+
+---
+# 级联故障摘要 (用于文档和报告)
+# 实验包含 3 个同时或按顺序触发的故障:
+# 1. adservice: PodKill (2m)
+# 2. recommendationservice: NetworkDelay 500ms (3m)
+# 3. checkoutservice: MemoryStress 80% (4m)
+# 预期告警: ServiceUnavailable, CascadeFailureDetected, SystemDegraded, CircuitBreakerCascade

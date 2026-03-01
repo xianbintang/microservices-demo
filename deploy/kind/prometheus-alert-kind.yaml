@@ -1,0 +1,104 @@
+# PrometheusAlert 部署 (Kind 本地集群)
+# 多渠道告警通知中心，支持钉钉、飞书、企业微信、短信、邮件等
+# 官方镜像: feiyu563/prometheus-alert:v4.9.1
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-alert
+  namespace: monitoring
+  labels:
+    app: prometheus-alert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-alert
+  template:
+    metadata:
+      labels:
+        app: prometheus-alert
+    spec:
+      initContainers:
+      - name: update-config
+        image: feiyu563/prometheus-alert:v4.9.1
+        command:
+        - sh
+        - -c
+        - |
+          cp /app/conf/app.conf /tmp/app.conf
+          sed -i 's|fsurl=https://open.feishu.cn/open-apis/bot/hook/xxxxxxxxx|fsurl=https://open.feishu.cn/open-apis/bot/v2/hook/0e698fb5-9e08-49f2-b8b4-05afb71030b1|g' /tmp/app.conf
+          cat /tmp/app.conf
+        volumeMounts:
+        - name: config
+          mountPath: /tmp
+      containers:
+      - name: prometheus-alert
+        image: feiyu563/prometheus-alert:v4.9.1
+        imagePullPolicy: IfNotPresent
+        env:
+        # 基础配置
+        - name: PA_LOGIN_USER
+          value: "admin"
+        - name: PA_LOGIN_PASSWORD
+          value: "admin"
+        - name: PA_TITLE
+          value: "PrometheusAlert"
+        # 开启飞书
+        - name: PA_OPEN_FEISHU
+          value: "1"
+        # 开启钉钉
+        - name: PA_OPEN_DINGDING
+          value: "1"
+        # 开启企业微信
+        - name: PA_OPEN_WEIXIN
+          value: "1"
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: db
+          mountPath: /db
+        - name: config
+          mountPath: /app/conf/app.conf
+          subPath: app.conf
+      volumes:
+      - name: db
+        emptyDir: {}
+      - name: config
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-alert
+  namespace: monitoring
+  labels:
+    app: prometheus-alert
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  selector:
+    app: prometheus-alert

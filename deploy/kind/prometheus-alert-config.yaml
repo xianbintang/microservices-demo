@@ -1,0 +1,96 @@
+# PrometheusAlert 飞书配置 ConfigMap
+# 用于持久化飞书 webhook URL
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-config
+  namespace: monitoring
+data:
+  app.conf: |
+    #---------------------↓全局配置-----------------------
+    appname = PrometheusAlert
+    #登录用户名
+    login_user=admin
+    #登录密码
+    login_password=admin
+    #监听地址
+    httpaddr = "0.0.0.0"
+    #监听端口
+    httpport = 8080
+    runmode = dev
+    #设置代理 proxy = http://123.123.123.123:8080
+    proxy =
+    #开启JSON请求
+    copyrequestbody = true
+    #告警消息标题
+    title=PrometheusAlert
+    #链接到告警平台地址
+    GraylogAlerturl=http://graylog.org
+    #钉钉告警 告警logo图标地址
+    logourl=https://raw.githubusercontent.com/feiyu563/PrometheusAlert/master/doc/images/alert-center.png
+    #钉钉告警 恢复logo图标地址
+    rlogourl=https://raw.githubusercontent.com/feiyu563/PrometheusAlert/master/doc/alert-center.png
+    #短信告警级别(等于3就进行短信告警) 告警级别定义 0 信息,1 警告,2 一般严重,3 严重,4 灾难
+    messagelevel=3
+    #电话告警级别(等于4就进行语音告警) 告警级别定义 0 信息,1 警告,2 一般严重,3 严重,4 灾难
+    phonecalllevel=4
+    #默认拨打号码(页面测试短信和电话功能需要配置此项)
+    defaultphone=xxxxxxxx
+    #故障恢复是否启用电话通知0为关闭,1为开启
+    phonecallresolved=0
+    #是否前台输出file or console
+    logtype=file
+    #日志文件路径
+    logpath=logs/prometheusalertcenter.log
+    #转换Prometheus,graylog告警消息的时区为CST时区(如默认已经是CST时区，请勿开启)
+    prometheus_cst_time=0
+    #数据库驱动，支持sqlite3，mysql,postgres如使用mysql或postgres，请开启db_host,db_port,db_user,db_password,db_name的注释
+    db_driver=sqlite3
+    #db_host=127.0.0.1
+    #db_port=3306
+    #db_user=root
+    #db_password=root
+    #db_name=prometheusalert
+    #是否开启告警记录 0为关闭,1为开启
+    AlertRecord=0
+    #是否开启告警记录定时删除 0为关闭,1为开启
+    RecordLive=0
+    #告警记录定时删除周期，单位天
+    RecordLiveDay=7
+    # 是否将告警记录写入es7，0为关闭，1为开启
+    alert_to_es=0
+    # es地址，是[]string
+    # beego.Appconfig.Strings读取配置为[]string，使用";"而不是","
+    to_es_url=http://localhost:9200
+    # to_es_url=http://es1:9200;http://es2:9200;http://es3:9200
+    # es用户和密码
+    # to_es_user=username
+    # to_es_pwd=password
+    # 长连接最大空闲数
+    maxIdleConns=100
+    # 热更新配置文件
+    open-hotreload=0
+
+    #---------------------↓webhook-----------------------
+    #是否开启钉钉告警通道,可同时开始多个通道0为关闭,1为开启
+    open-dingding=1
+    #默认钉钉机器人地址
+    ddurl=https://oapi.dingtalk.com/robot/send?access_token=xxxxx
+    #是否开启 @所有人(0为关闭,1为开启)
+    dd_isatall=1
+    #是否开启钉钉机器人加签，0为关闭,1为开启
+    # 使用方法：https://oapi.dingtalk.com/robot/send?access_token=XXXXXX&secret=mysecret
+    open-dingding-secret=0
+
+    #是否开启微信告警通道,可同时开始多个通道0为关闭,1为开启
+    open-weixin=1
+    #默认企业微信机器人地址
+    wxurl=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx
+
+    #是否开启飞书告警通道,可同时开始多个通道0为关闭,1为开启
+    open-feishu=1
+    #默认飞书机器人地址
+    fsurl=https://open.feishu.cn/open-apis/bot/v2/hook/0e698fb5-9e08-49f2-b8b4-05afb71030b1
+    # webhook 发送 http 请求的 contentType, 如 application/json, application/x-www-form-urlencoded，不配置默认 application/json
+    wh_contenttype=application/json

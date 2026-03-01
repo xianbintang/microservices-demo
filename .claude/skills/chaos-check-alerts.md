@@ -1,12 +1,6 @@
----
-description: 检查告警覆盖度，确保混沌实验前关键场景都有告警覆盖
----
+# 告警覆盖度检查 skill
 
-# 告警覆盖度检查
-
-## 功能
-
-检查当前告警规则的覆盖度，识别缺失的告警规则，评估是否允许执行混沌实验。
+执行告警覆盖度检查，确保关键场景都有告警覆盖。
 
 ## 用法
 
@@ -14,41 +8,42 @@ description: 检查告警覆盖度，确保混沌实验前关键场景都有告�
 /chaos-check-alerts [namespace]
 ```
 
-## 参数
+### 参数
 
 - `namespace`: 可选，指定要检查的命名空间（默认：online-boutique）
 
-## 执行步骤
+## 执行流程
 
-1. **扫描告警规则**
-   - 查询 Prometheus 告警规则
-   - 查询 AlertManager 告警配置
+1. 扫描 Prometheus 中的告警规则
+2. 对比关键告警场景清单
+3. 计算告警覆盖率
+4. 生成覆盖度报告
+5. 评估是否允许执行混沌实验
 
-2. **对比关键场景清单**
-   - 从 `docs/chaos/critical-alert-scenarios.md` 读取必需告警
-   - 对比已配置的告警规则
+## 关键告警场景清单
 
-3. **计算覆盖率**
-   - 计算覆盖百分比
-   - 识别缺失的告警规则
+| 类别 | 关键场景 | 必需告警 | 严重级别 |
+|------|---------|---------|---------|
+| Pod 状态 | Pod 崩溃/终止 | PodDown/PodNotReady | Critical |
+| Pod 状态 | Pod 重启次数过多 | PodRestartTooMany | Warning |
+| Pod 状态 | Pod CrashLoopBackOff | PodCrashLoopBackOff | Critical |
+| 服务可用性 | 服务完全不可用 | ServiceDown | Critical |
+| 服务可用性 | 服务部分不可用 | ServiceUnavailable | Warning |
+| 性能指标 | 高延迟（P95） | HighLatency | Warning |
+| 性能指标 | 高错误率 | HighErrorRate | Warning |
+| 性能指标 | 高 5xx 率 | High5xxRate | Critical |
+| 资源使用 | CPU 使用率过高 | HighCPUUsage | Warning |
+| 资源使用 | 内存使用率过高 | HighMemoryUsage | Warning |
+| 资源使用 | Pod OOM | PodOOMKilled | Critical |
+| 资源使用 | CPU 节流严重 | CPUThrottlingHigh | Warning |
+| 依赖服务 | 上游错误率高 | DependencyErrorRateHigh | Warning |
+| 依赖服务 | 依赖服务超时 | DependencyTimeout | Warning |
+| 熔断器 | 熔断器打开 | CircuitBreakerOpen | Warning |
 
-4. **生成报告**
-   - 显示已覆盖告警
-   - 显示缺失告警
-   - 显示覆盖率统计
+## 覆盖率阈值
 
-5. **评估是否允许实验**
-   - 覆盖率 ≥ 80% 且关键场景全覆盖 → 允许执行
-   - 否则 → 阻塞执行，建议补充告警
-
-## 关键告警场景
-
-- Pod 状态: PodDown, PodNotReady, PodCrashLoopBackOff
-- 服务可用性: ServiceDown, ServiceUnavailable
-- 性能指标: HighLatency, HighErrorRate, High5xxRate
-- 资源使用: HighCPUUsage, HighMemoryUsage, PodOOMKilled
-- 依赖服务: DependencyErrorRateHigh, DependencyTimeout
-- 熔断器: CircuitBreakerOpen
+- **总体覆盖率**: ≥ 80%
+- **关键场景覆盖率**: 100% (所有 Critical 级别场景必须有告警覆盖)
 
 ## 输出示例
 
@@ -86,11 +81,15 @@ description: 检查告警覆盖度，确保混沌实验前关键场景都有告�
 阻塞状态: ⚠️ 允许执行非资源实验，资源实验需要补充告警
 ```
 
-## 实现说明
+## 验收标准
 
-本 skill 使用脚本 `scripts/chaos/check-alert-coverage.sh` 执行检查。
+- [ ] 能正确扫描当前告警规则
+- [ ] 能准确对比关键场景清单
+- [ ] 能计算正确的覆盖率
+- [ ] 能生成可读的检查报告
+- [ ] 能正确判断是否允许执行实验
 
-调用方式：
-```bash
-bash scripts/chaos/check-alert-coverage.sh online-boutique
-```
+## 相关文档
+
+- [告警覆盖度检查指南](../../docs/chaos/alert-coverage-check-guide.md)
+- [混沌实验运行手册](../../docs/chaos/runbook.md)

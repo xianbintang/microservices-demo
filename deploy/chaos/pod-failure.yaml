@@ -1,23 +1,24 @@
+# Pod Failure Experiment Template
+# 测试 Pod 故障时的系统弹性和自愈能力
+
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
-  name: pod-failure
+  name: pod-failure-experiment
   namespace: monitoring
-  annotations:
-    chaos.mes.org/description: "Pod failure experiment"
-    chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "KubePodNotReady,TargetDown"
   labels:
     chaos.mes.org/type: pod-failure
     chaos.mes.org/namespace: online-boutique
-    chaos.mes.org/status: "pending"
+  annotations:
+    chaos.mes.org/description: "Pod failure experiment - kills a Pod to test self-healing"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "PodNotReady,ServiceUnavailable"
 spec:
   action: pod-kill
   mode: one
-  value: "1"
-  duration: "2m"
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
       app: frontend
+  duration: "2m"

@@ -69,6 +69,12 @@ webhook:
       cpu: 50m
       memory: 64Mi
 
+  # 准入 webhook 验证配置
+  admission:
+    enabled: true
+    # 验证实验参数是否超过安全限制
+    validateLimits: true
+
 # 安全配置
 security:
   # 是否启用 RBAC
@@ -101,11 +107,20 @@ limits:
   # 最大网络延迟
   maxNetworkDelay: 2000ms
 
+  # 最大网络丢包率（%）
+  maxNetworkLoss: 20
+
   # 最大 CPU 压力（%）
   maxCPUStress: 90
 
   # 最大内存压力（%）
   maxMemoryStress: 80
+
+  # 最大损坏 Pod 数量（百分比）
+  maxPodFailureRate: 50
+
+  # 最大 IO 压力（%）
+  maxIOStress: 80
 
 # 允许的命名空间（白名单）
 allowedNamespaces:

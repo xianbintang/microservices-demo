@@ -1,8 +1,6 @@
----
-description: 触发服务依赖故障注入实验，模拟依赖服务不可用
----
+# 依赖故障注入 skill
 
-# 依赖故障注入
+触发服务依赖故障注入实验，模拟依赖服务不可用。
 
 ## 用法
 
@@ -10,7 +8,7 @@ description: 触发服务依赖故障注入实验，模拟依赖服务不可用
 /chaos-inject-dependency [service] [dependency] [duration]
 ```
 
-## 参数
+### 参数
 
 - `service`: 上游服务名称（如 `frontend`）
 - `dependency`: 依赖服务名称（如 `adservice`）

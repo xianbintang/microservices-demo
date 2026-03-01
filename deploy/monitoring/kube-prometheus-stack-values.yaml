@@ -103,6 +103,52 @@ prometheus:
           - action: labelmap
             regex: __meta_kubernetes_node_label_(.+)
 
+      # 混沌工程 - Chaos Mesh Controller 指标
+      - job_name: 'chaos-mesh-controller'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - monitoring
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: controller-manager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            regex: chaos-mesh
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:10080'  # Chaos Mesh metrics 端口
+
+      # 混沌工程 - Chaos Mesh Daemon 指标
+      - job_name: 'chaos-mesh-daemon'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - monitoring
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: chaos-daemon
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            regex: chaos-mesh
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:10081'  # Chaos Daemon metrics 端口
+
 # ===========================================
 # Grafana 配置
 # ===========================================
@@ -330,11 +376,11 @@ alertmanager:
       - name: 'null'
       - name: 'critical'
         webhook_configs:
-          - url: 'http://dingtalk-webhook.monitoring.svc:8060/dingtalk/critical/send'
+          - url: 'http://prometheus-alert.monitoring.svc:8080/prometheusalert?type=fs&tpl=prometheus-fs'
             send_resolved: true
       - name: 'warning'
         webhook_configs:
-          - url: 'http://dingtalk-webhook.monitoring.svc:8060/dingtalk/warning/send'
+          - url: 'http://prometheus-alert.monitoring.svc:8080/prometheusalert?type=fs&tpl=prometheus-fs'
             send_resolved: true
 
 # ===========================================

@@ -1,26 +1,40 @@
+# Network Latency Experiment Template
+# 测试网络延迟时的系统弹性和性能表现
+
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
-  name: network-latency
+  name: network-latency-experiment
   namespace: monitoring
-  annotations:
-    chaos.mes.org/description: "Network latency experiment"
-    chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "KubeletPodStartUpLatencyHigh,KubeClientErrors"
   labels:
     chaos.mes.org/type: network-latency
     chaos.mes.org/namespace: online-boutique
+  annotations:
+    chaos.mes.org/description: "Network latency experiment - adds delay to simulate network congestion"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "HighLatency,High5xxRate"
 spec:
   action: delay
   mode: one
-  value: "1"
-  duration: "3m"
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
-      app: recommendationservice
+      # 可以指定服务，例如:
+      # app: recommendationservice
   delay:
-    latency: 500ms
-    jitter: 50ms
+    latency: "500ms"
+    jitter: "50ms"
+    correlation: "0"
   direction: to
+  # 目标服务（可选，留空则应用于所有出站流量）
+  target:
+    selector:
+      namespaces:
+        - online-boutique
+    mode: one
+  duration: "3m"
+  # 可选：添加丢包
+  # loss:
+  #   loss: "5"
+  #   correlation: "0"

@@ -1,12 +1,6 @@
----
-description: 触发 Pod 故障注入实验，终止指定服务或随机 Pod
----
+# Pod 故障注入 skill
 
-# Pod 故障注入
-
-## 功能
-
-触发 Pod 故障注入实验，终止指定服务或随机 Pod，验证系统自愈能力和告警触发。
+触发 Pod 故障注入实验，终止指定服务或随机 Pod。
 
 ## 用法
 
@@ -14,64 +8,19 @@ description: 触发 Pod 故障注入实验，终止指定服务或随机 Pod
 /chaos-inject-pod [service] [duration]
 ```
 
-## 参数
+### 参数
 
 - `service`: 可选，目标服务名称（如 `frontend`、`adservice`），不指定则随机选择
 - `duration`: 可选，实验时长（默认：2m），格式：数字+s/m/h
 
-## 执行步骤
+## 执行流程
 
-1. **前置检查**
-   - 运行告警覆盖度检查
-   - 验证目标服务存在
-   - 检查当前是否有运行中的实验
-
-2. **记录基准指标**
-   - Pod 状态和 restart_count
-   - Service endpoints
-   - 服务 QPS
-   - 错误率
-   - P95/P99 延迟
-
-3. **应用故障注入**
-   - 选择目标 Pod
-   - 应用 PodKill 故障
-   - 记录实验开始时间
-
-4. **观察阶段**
-   - 监控 Pod 重建过程
-   - 监控 Service endpoints 更新
-   - 监控错误率 spike
-   - 监控告警触发
-
-## 预期告警
-
-- PodNotReady (Critical)
-- ServiceUnavailable (Warning)
-
-## 验收标准
-
-- Pod 在 60s 内恢复 Ready
-- Service endpoints 在 30s 内更新
-- 错误率 spike 不超过 10%
-- 5 分钟内 QPS 恢复到基准的 90% 以上
-- 无持久化资源泄漏
-
-## 下一步操作
-
-- `/chaos-monitor` - 监控实验状态
-- `/chaos-validate-alerts` - 验证告警触发
-- `/chaos-validate-self-heal` - 验证自我恢复
-- `/chaos-report` - 生成实验报告
-- `/chaos-abort` - 中止实验
-
-## 实现说明
-
-本 skill 执行以下操作：
-1. 调用 `/chaos-check-alerts` 进行前置检查
-2. 创建实验 ID：`pod-failure-YYYYMMDD-HHMMSS`
-3. 使用 `kubectl apply -f deploy/chaos/pod-failure.yaml` 应用故障
-4. 输出实验状态和观察指标
+1. 运行告警覆盖度检查
+2. 选择目标 Pod（指定服务或随机）
+3. 记录基准指标
+4. 应用 PodKill 故障
+5. 记录实验开始时间
+6. 显示实验状态和观察指标
 
 ## 输出示例
 
@@ -105,3 +54,17 @@ Pod 故障注入实验
 - 使用 /chaos-report 生成实验报告
 - 使用 /chaos-abort 中止实验
 ```
+
+## 验收标准
+
+- [ ] 能正确执行告警覆盖度检查
+- [ ] 能正确选择目标 Pod
+- [ ] 能成功应用 PodKill 故障
+- [ ] 能记录基准指标
+- [ ] 能显示实验状态和观察指标
+- [ ] 能提供下一步操作指引
+
+## 相关文档
+
+- [混沌实验运行手册](../../docs/chaos/runbook.md)
+- [故障排除指南](../../docs/chaos/troubleshooting.md)

@@ -1,0 +1,86 @@
+# Chaos Mesh ValidatingWebhookConfiguration
+# 用于验证混沌实验参数是否符合安全限制
+
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: chaos-mesh-validation-webhook
+  annotations:
+    description: "Validates chaos experiment parameters against safe limits"
+webhooks:
+  - name: validate.chaos-mesh.org
+    rules:
+      - apiGroups: ["chaos-mesh.org"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources:
+          - podchaos
+          - networkchaos
+          - stresschaos
+          - iochaos
+          - kernelchaos
+          - timechaos
+          - httpchaos
+          - awschaos
+          - azurechaos
+          - gcpchaos
+          - dnschaos
+          - jvmchaos
+          - podiochaos
+          - podnetworkchaos
+          - httpchaos
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: chaos-controller-manager
+        namespace: monitoring
+        path: "/validate"
+        port: 443
+      caBundle: ${CA_BUNDLE}
+
+---
+# ConfigMap 用于存储验证规则
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-mesh-validation-rules
+  namespace: monitoring
+data:
+  validation-rules.yaml: |
+    # 混沌实验验证规则
+
+    # 实验时长限制
+    max_duration: 10m
+
+    # 网络相关限制
+    network:
+      max_latency: 2000ms
+      max_loss: 20
+      max_bandwidth_limit: 10mbps
+
+    # 资源压力限制
+    stress:
+      cpu:
+        max_load: 90
+        max_workers: 4
+      memory:
+        max_size: 80%
+      io:
+        max_load: 80%
+
+    # Pod 故障限制
+    pod:
+      max_failure_rate: 50  # 最大损坏 Pod 百分比
+
+    # 时间偏移限制
+    time:
+      max_offset: 1h
+
+    # 禁止的操作
+    forbidden_actions:
+      - "delete-namespace"
+      - "delete-node"
+      - "delete-service"
+      - "modify-kubelet"
