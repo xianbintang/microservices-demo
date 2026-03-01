@@ -18,12 +18,12 @@ prometheusOperator:
       registry: quay.io
       repository: prometheus-operator/prometheus-config-reloader
       tag: ""
+  # Disable TLS and admission webhooks entirely for kind
+  # (no certgen job, no TLS secret mount, operator starts cleanly)
+  tls:
+    enabled: false
   admissionWebhooks:
-    certgen:
-      image:
-        registry: ghcr.io
-        repository: jkroepke/kube-webhook-certgen
-        tag: ""
+    enabled: false
     patch:
       enabled: false
 

@@ -24,8 +24,23 @@ else
 endif
 KIND := $(KIND_PROVIDER_ENV) kind
 
+# podman requires --tls-verify=false for HTTP local registry (localhost:*)
+# docker trusts localhost registries by default — no flag needed
+ifeq ($(findstring podman,$(DOCKER)),podman)
+  PUSH_FLAGS := --tls-verify=false
+else
+  PUSH_FLAGS :=
+endif
+
 # ──────────────────────────────────────────────────────────────
-# Image source (Google public registry — pre-loaded into kind)
+# Local registry (mirrors Google registry transparently)
+# ──────────────────────────────────────────────────────────────
+KIND_REGISTRY_NAME := kind-registry
+KIND_REGISTRY_PORT := 5001
+LOCAL_REGISTRY     := localhost:$(KIND_REGISTRY_PORT)
+
+# ──────────────────────────────────────────────────────────────
+# Image source (Google public registry — mirrored to local)
 # ──────────────────────────────────────────────────────────────
 GOOGLE_REGISTRY := us-central1-docker.pkg.dev/google-samples/microservices-demo
 IMAGE_TAG       := v0.10.4
@@ -39,20 +54,37 @@ DEPLOY_NS       := online-boutique
 MONITORING_NS   := monitoring
 
 # ──────────────────────────────────────────────────────────────
-# App services to pull/retag
+# App services
 # ──────────────────────────────────────────────────────────────
+# All 11 app services (pull from Google OR push built images)
 APP_SERVICES := frontend checkoutservice shippingservice productcatalogservice \
                 recommendationservice emailservice paymentservice currencyservice \
                 loadgenerator adservice cartservice
 
-.PHONY: all up down check-prereqs create-cluster \
-        pull-images deploy-monitoring deploy-app port-forward status \
-        deploy-remote
+# Services that can be built from source for the target platform.
+# cartservice is excluded: Grpc.Tools 2.76.0 linux_arm64/protoc exits with
+# SIGSEGV (known upstream bug). cartservice is I/O-bound (Redis), so running
+# the amd64 binary via Rosetta on arm64 has negligible overhead.
+BUILD_SERVICES := frontend checkoutservice shippingservice productcatalogservice \
+                  recommendationservice emailservice paymentservice currencyservice \
+                  loadgenerator adservice
+
+# ──────────────────────────────────────────────────────────────
+# Registry path prefix for image push
+# Local kind:  push to localhost:5001/google-samples/microservices-demo/<svc>
+#              containerd mirror redirects pulls from Google registry to this path
+# Remote:      overridden to REGISTRY (passed via deploy-remote)
+# ──────────────────────────────────────────────────────────────
+PUSH_REGISTRY ?= $(LOCAL_REGISTRY)/google-samples/microservices-demo
+
+.PHONY: all up down check-prereqs create-registry create-cluster configure-mirror \
+        prepare-images pull-images build-images push-base-images \
+        deploy-monitoring deploy-app port-forward status deploy-remote
 
 all: up  ## Alias for 'up'
 
 ## ── One-click full deploy ──────────────────────────────────────
-up: check-prereqs create-cluster pull-images \
+up: check-prereqs create-registry create-cluster prepare-images \
     deploy-monitoring deploy-app port-forward status
 
 ## ── Prerequisites check ───────────────────────────────────────
@@ -66,39 +98,143 @@ check-prereqs:
 	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 	@helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 	@helm repo update
+	@if echo "$(DOCKER)" | grep -q podman; then \
+	  mkdir -p ~/.config/containers; \
+	  if ! grep -qs "localhost:$(KIND_REGISTRY_PORT)" ~/.config/containers/registries.conf 2>/dev/null; then \
+	    printf '[[registry]]\nlocation = "localhost:$(KIND_REGISTRY_PORT)"\ninsecure = true\n' \
+	      >> ~/.config/containers/registries.conf; \
+	    echo "✓ localhost:$(KIND_REGISTRY_PORT) added to podman insecure registries"; \
+	  fi; \
+	fi
 	@echo "✓ Prerequisites OK (platform: $(PLATFORM), runtime: $(DOCKER))"
 
+## ── Local Docker registry ─────────────────────────────────────
+# Images are pushed here with the Google registry path prefix.
+# containerd on the kind node is configured to mirror
+#   us-central1-docker.pkg.dev → kind-registry:5000
+# so Pods pulling from the Google registry get them locally.
+create-registry:
+	@if ! $(DOCKER) ps --format "{{.Names}}" 2>/dev/null | grep -q "^$(KIND_REGISTRY_NAME)$$"; then \
+	  $(DOCKER) run -d --restart=always \
+	    -p "127.0.0.1:$(KIND_REGISTRY_PORT):5000" \
+	    --name $(KIND_REGISTRY_NAME) registry:2; \
+	  echo "✓ Registry started on port $(KIND_REGISTRY_PORT)"; \
+	else \
+	  echo "✓ Registry already running"; \
+	fi
+
 ## ── Kind cluster ──────────────────────────────────────────────
-create-cluster:
+create-cluster: create-registry
 	@if ! $(KIND) get clusters 2>/dev/null | grep -q "^$(CLUSTER_NAME)$$"; then \
 	  $(KIND) create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG); \
 	  echo "✓ Cluster created"; \
 	else \
 	  echo "✓ Cluster already exists"; \
 	fi
+	@$(DOCKER) network connect kind $(KIND_REGISTRY_NAME) 2>/dev/null || true
 	@kubectl config use-context kind-$(CLUSTER_NAME)
+	@$(MAKE) -f Makefile.kind configure-mirror
 	@echo "✓ Cluster ready"
 
-## ── Pull images & load into kind (no registry needed) ─────────
+## ── Containerd registry mirror ─────────────────────────────────
+# Configures containerd on the kind node to redirect pulls from
+# us-central1-docker.pkg.dev to the local kind-registry:5000.
+#
+# IMPORTANT: hosts.toml must NOT include skip_verify=true or any
+# TLS config for an HTTP mirror — containerd interprets any TLS
+# config as "try HTTPS first", causing the mirror to fail.
+#
+# Also adds kind-registry to containerd's NO_PROXY so the mirror
+# host is not routed through a system HTTP proxy.
+configure-mirror:
+	@NODE="$(CLUSTER_NAME)-control-plane"; \
+	 $(DOCKER) exec "$$NODE" sh -c \
+	   'mkdir -p /etc/containerd/certs.d/kind-registry:5000 && \
+	    printf "server = \"http://kind-registry:5000\"\n\n[host.\"http://kind-registry:5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n" \
+	      > /etc/containerd/certs.d/kind-registry:5000/hosts.toml'; \
+	 if [ -n "$$HTTP_PROXY$$HTTPS_PROXY$$http_proxy$$https_proxy" ]; then \
+	   HOST_PROXY=$$(echo "$${HTTP_PROXY:-$${http_proxy}}" | sed 's|127\.0\.0\.1|host.containers.internal|g'); \
+	   $(DOCKER) exec "$$NODE" sh -c \
+	     "mkdir -p /etc/systemd/system/containerd.service.d && \
+	      printf '[Service]\nEnvironment=\"HTTP_PROXY=$$HOST_PROXY\"\nEnvironment=\"HTTPS_PROXY=$$HOST_PROXY\"\nEnvironment=\"NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.cluster.local,kind-registry,fc00::/7\"\n' \
+	        > /etc/systemd/system/containerd.service.d/proxy.conf && \
+	      systemctl daemon-reload && systemctl restart containerd"; \
+	   echo "✓ Proxy configured in containerd ($$HOST_PROXY, kind-registry excluded)"; \
+	 else \
+	   echo "✓ No host proxy detected, containerd will connect directly"; \
+	 fi; \
+	 echo "✓ kind-registry:5000 configured as direct HTTP registry"
+
+## ── Prepare images (arch-aware dispatch) ─────────────────────
+# arm64 host → build from source (Google only publishes amd64 images)
+# amd64 host → pull pre-built images from Google public registry
+prepare-images:
+ifeq ($(PLATFORM),linux/arm64)
+	@$(MAKE) -f Makefile.kind build-images
+else
+	@$(MAKE) -f Makefile.kind pull-images
+endif
+
+## ── Build images from source (arm64) ─────────────────────────
+# Builds all app services from src/ for the target PLATFORM.
+# cartservice is always pulled as amd64: Grpc.Tools 2.76.0 linux_arm64/protoc
+# exits with SIGSEGV (known upstream bug). cartservice is I/O-bound (Redis)
+# so running via Rosetta on arm64 has negligible overhead.
+#
+# PUSH_REGISTRY defaults to the local kind registry path prefix.
+# Override for remote push: make build-images PUSH_REGISTRY=your.registry.com
+build-images:
+	@echo "Building app images from source (platform: $(PLATFORM))..."
+	@for svc in $(BUILD_SERVICES); do \
+	  echo "  → building $$svc"; \
+	  $(DOCKER) build --platform $(PLATFORM) \
+	    -t $(PUSH_REGISTRY)/$$svc:$(IMAGE_TAG) \
+	    src/$$svc/ && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/$$svc:$(IMAGE_TAG); \
+	done
+	@echo "  → cartservice (amd64 only — Grpc.Tools 2.76.0 arm64 build bug)"
+	@$(DOCKER) pull --platform linux/amd64 $(GOOGLE_REGISTRY)/cartservice:$(IMAGE_TAG) && \
+	  $(DOCKER) tag $(GOOGLE_REGISTRY)/cartservice:$(IMAGE_TAG) \
+	    $(PUSH_REGISTRY)/cartservice:$(IMAGE_TAG) && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/cartservice:$(IMAGE_TAG)
+	@$(MAKE) -f Makefile.kind push-base-images
+	@echo "✓ All images built and pushed to $(PUSH_REGISTRY)"
+
+## ── Pull pre-built images from Google registry (amd64) ───────
+# Pulls Google's published amd64 images and re-tags them into the
+# local registry using the same path structure, so containerd's mirror
+# redirects pod pulls from the Google registry transparently.
 pull-images:
-	@echo "Pulling & loading app images into kind (platform: $(PLATFORM))..."
+	@echo "Pulling & pushing app images (platform: $(PLATFORM))..."
 	@for svc in $(APP_SERVICES); do \
 	  echo "  → $$svc"; \
 	  $(DOCKER) pull --platform $(PLATFORM) $(GOOGLE_REGISTRY)/$$svc:$(IMAGE_TAG) && \
-	  $(KIND) load docker-image --name $(CLUSTER_NAME) \
-	    $(GOOGLE_REGISTRY)/$$svc:$(IMAGE_TAG); \
+	  $(DOCKER) tag $(GOOGLE_REGISTRY)/$$svc:$(IMAGE_TAG) \
+	    $(PUSH_REGISTRY)/$$svc:$(IMAGE_TAG) && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/$$svc:$(IMAGE_TAG); \
 	done
-	@echo "  → redis (retag to match chart repository prefix)"
+	@$(MAKE) -f Makefile.kind push-base-images
+	@echo "✓ All images ready in local registry"
+
+## ── Push base images (redis, busybox, otel-collector) ────────
+# These 3rd-party images are pulled for the target platform and
+# pushed into PUSH_REGISTRY alongside the app images.
+push-base-images:
+	@echo "  → busybox:latest (loadgenerator init container)"
+	@$(DOCKER) pull --platform $(PLATFORM) busybox:latest && \
+	  $(DOCKER) tag busybox:latest \
+	    $(PUSH_REGISTRY)/busybox:latest && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/busybox:latest
+	@echo "  → redis:alpine (cart)"
 	@$(DOCKER) pull --platform $(PLATFORM) redis:alpine && \
-	  $(DOCKER) tag redis:alpine $(GOOGLE_REGISTRY)/redis:alpine && \
-	  $(KIND) load docker-image --name $(CLUSTER_NAME) $(GOOGLE_REGISTRY)/redis:alpine
-	@echo "  → opentelemetry-collector-contrib (retag to match chart repository prefix)"
+	  $(DOCKER) tag redis:alpine \
+	    $(PUSH_REGISTRY)/redis:alpine && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/redis:alpine
+	@echo "  → opentelemetry-collector-contrib:0.144.0"
 	@$(DOCKER) pull --platform $(PLATFORM) otel/opentelemetry-collector-contrib:0.144.0 && \
 	  $(DOCKER) tag otel/opentelemetry-collector-contrib:0.144.0 \
-	    $(GOOGLE_REGISTRY)/opentelemetry-collector-contrib:0.144.0 && \
-	  $(KIND) load docker-image --name $(CLUSTER_NAME) \
-	    $(GOOGLE_REGISTRY)/opentelemetry-collector-contrib:0.144.0
-	@echo "✓ All images loaded into kind cluster"
+	    $(PUSH_REGISTRY)/opentelemetry-collector-contrib:0.144.0 && \
+	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/opentelemetry-collector-contrib:0.144.0
 
 ## ── Monitoring stack ──────────────────────────────────────────
 deploy-monitoring:
@@ -126,7 +262,7 @@ deploy-monitoring:
 	@helm upgrade --install promtail grafana/promtail -n $(MONITORING_NS) \
 	  -f deploy/monitoring/promtail-values.yaml \
 	  -f deploy/kind/promtail-kind.yaml \
-	  --timeout 5m --wait
+	  --timeout 5m
 	@echo "✓ Monitoring stack deployed"
 
 ## ── Online Boutique app ───────────────────────────────────────
@@ -136,7 +272,39 @@ deploy-app:
 	  -n $(DEPLOY_NS) \
 	  -f deploy/kind/values-kind.yaml \
 	  --timeout 10m --wait
+	@$(MAKE) -f Makefile.kind patch-probes
+	@$(MAKE) -f Makefile.kind patch-loadgenerator
 	@echo "✓ Online Boutique deployed"
+
+## ── Patch gRPC probes → TCP socket probes ─────────────────────
+# kind single-node clusters have slower gRPC HTTP/2 handshakes than
+# production. TCP socket probes verify the port is listening without
+# the full gRPC negotiation overhead — more reliable in any kind env.
+patch-probes:
+	@for svc in adservice cartservice checkoutservice currencyservice \
+	            emailservice paymentservice productcatalogservice \
+	            recommendationservice shippingservice; do \
+	  PORT=$$(kubectl get deployment $$svc -n $(DEPLOY_NS) \
+	    -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.grpc.port}' 2>/dev/null); \
+	  [ -z "$$PORT" ] && continue; \
+	  kubectl patch deployment $$svc -n $(DEPLOY_NS) --type=json -p="[ \
+	    {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/livenessProbe\", \
+	     \"value\":{\"tcpSocket\":{\"port\":$$PORT},\"timeoutSeconds\":5,\"periodSeconds\":15,\"failureThreshold\":5,\"initialDelaySeconds\":15}}, \
+	    {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe\", \
+	     \"value\":{\"tcpSocket\":{\"port\":$$PORT},\"timeoutSeconds\":5,\"periodSeconds\":10,\"failureThreshold\":5,\"initialDelaySeconds\":10}} \
+	  ]" 2>/dev/null && echo "  patched $$svc (port $$PORT)" || true; \
+	done
+	@echo "✓ gRPC probes switched to TCP socket probes"
+
+## ── Set loadgenerator concurrency ────────────────────────────
+# With native arm64 images the chart default (USERS=10) is fine.
+# Override LOAD_USERS to adjust: make -f Makefile.kind patch-loadgenerator LOAD_USERS=20
+LOAD_USERS ?= 10
+patch-loadgenerator:
+	@kubectl patch deployment loadgenerator -n $(DEPLOY_NS) --type=json \
+	  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/env/1/value","value":"$(LOAD_USERS)"}]' \
+	  2>/dev/null || true
+	@echo "✓ loadgenerator set to $(LOAD_USERS) users"
 
 ## ── Port forwarding ───────────────────────────────────────────
 port-forward:
@@ -163,13 +331,28 @@ down:
 	@pkill -f "port-forward.*8080" 2>/dev/null || true
 	@pkill -f "port-forward.*3000" 2>/dev/null || true
 	@$(KIND) delete cluster --name $(CLUSTER_NAME) 2>/dev/null || true
-	@echo "✓ Cluster destroyed"
+	@$(DOCKER) rm -f $(KIND_REGISTRY_NAME) 2>/dev/null || true
+	@echo "✓ Cluster and registry destroyed"
 
 ## ── Remote K8s deployment ─────────────────────────────────────
-# Usage: make -f Makefile.kind deploy-remote REGISTRY=your.registry.com [CONTEXT=my-context]
+# Detects cluster node architecture automatically, builds the matching
+# images from source, pushes to REGISTRY, then deploys the full stack.
+#
+# Usage:
+#   make -f Makefile.kind deploy-remote REGISTRY=your.registry.com
+#   make -f Makefile.kind deploy-remote REGISTRY=your.registry.com CONTEXT=my-context
+#
+# REGISTRY must be accessible from both the build host and the cluster nodes.
 deploy-remote:
 	$(if $(REGISTRY),,$(error REGISTRY is required. Usage: make -f Makefile.kind deploy-remote REGISTRY=your.registry.com))
-	$(if $(CONTEXT),kubectl config use-context $(CONTEXT),)
+	$(if $(CONTEXT),@kubectl config use-context $(CONTEXT),)
+	$(eval REMOTE_ARCH := $(shell kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null))
+	$(if $(REMOTE_ARCH),,$(error Could not detect cluster architecture. Check kubectl context and cluster connectivity.))
+	$(eval REMOTE_PLATFORM := $(if $(filter arm64 aarch64,$(REMOTE_ARCH)),linux/arm64,linux/amd64))
+	@echo "Cluster node architecture: $(REMOTE_ARCH) → building $(REMOTE_PLATFORM) images"
+	@$(MAKE) -f Makefile.kind build-images \
+	  PLATFORM=$(REMOTE_PLATFORM) \
+	  PUSH_REGISTRY=$(REGISTRY)
 	@kubectl create namespace $(DEPLOY_NS) --dry-run=client -o yaml | kubectl apply -f -
 	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
 	@kubectl apply -f deploy/monitoring/dashboards/grafana-dashboards-configmap.yaml \
@@ -178,24 +361,24 @@ deploy-remote:
 	  prometheus-community/kube-prometheus-stack \
 	  -n $(MONITORING_NS) \
 	  -f deploy/monitoring/kube-prometheus-stack-values.yaml \
-	  --timeout 10m
+	  --timeout 10m --wait
 	@helm upgrade --install loki grafana/loki \
 	  -n $(MONITORING_NS) \
 	  -f deploy/monitoring/loki-values.yaml \
-	  --timeout 5m
+	  --timeout 5m --wait
 	@helm upgrade --install tempo grafana/tempo \
 	  -n $(MONITORING_NS) \
 	  -f deploy/monitoring/tempo-values.yaml \
-	  --timeout 5m
+	  --timeout 5m --wait
 	@helm upgrade --install promtail grafana/promtail \
 	  -n $(MONITORING_NS) \
 	  -f deploy/monitoring/promtail-values.yaml \
-	  --timeout 5m
+	  --timeout 5m --wait
 	@helm upgrade --install online-boutique helm-chart/ \
 	  -n $(DEPLOY_NS) \
 	  --set images.repository=$(REGISTRY) \
 	  --set selfHostedObservability.enabled=true \
 	  --set volcengineAPM.enabled=false \
 	  --set sreAgent.create=false \
-	  --timeout 10m
-	@echo "✓ Remote deploy complete"
+	  --timeout 10m --wait
+	@echo "✓ Remote deploy complete ($(REMOTE_PLATFORM) images → $(REGISTRY))"

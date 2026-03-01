@@ -1,7 +1,10 @@
-# Use Google registry path (images are pre-loaded into kind via 'kind load docker-image')
-# Default repository: us-central1-docker.pkg.dev/google-samples/microservices-demo
-# Default tag: v0.10.4 (chart appVersion)
-# No override needed for images.repository / images.tag
+# kind 本地集群镜像配置
+# 镜像直接从本地 kind-registry 拉取（由 Makefile.kind build-images 构建并推送）
+# arm64 环境：所有服务为原生 arm64 构建（cartservice 除外，保留 amd64）
+# amd64 环境：从 Google public registry 拉取 amd64 预构建镜像
+images:
+  repository: kind-registry:5000/google-samples/microservices-demo
+  tag: "v0.10.4"
 
 selfHostedObservability:
   enabled: true
