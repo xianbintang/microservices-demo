@@ -36,3 +36,32 @@ spec:
           labels:
             severity: warning
             chaos_test: "true"
+
+    - name: chaos.latency.alerts
+      interval: 30s
+      rules:
+        # High Latency Detected - 混沌工程测试专用
+        - alert: ChaosHighLatency
+          annotations:
+            description: '服务 {{ $labels.service_name }} P95 延迟过高: {{ $value }}ms (chaos test)'
+            summary: High latency detected.
+          expr: |
+            histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".*"}[5m])) by (le, service_name)) > 2000
+          for: 30s
+          labels:
+            severity: warning
+            chaos_test: "true"
+
+        # High Error Rate Detected - 混沌工程测试专用
+        - alert: ChaosHighErrorRate
+          annotations:
+            description: '服务 {{ $labels.service_name }} 错误率过高: {{ $value | humanizePercentage }} (chaos test)'
+            summary: High error rate detected.
+          expr: |
+            (sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[5m])) by (service_name)
+            - sum(rate(traces_spanmetrics_calls_total{service_name=~".*",status_code="STATUS_CODE_OK"}[5m])) by (service_name))
+            / sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[5m])) by (service_name) > 0.1
+          for: 30s
+          labels:
+            severity: critical
+            chaos_test: "true"
