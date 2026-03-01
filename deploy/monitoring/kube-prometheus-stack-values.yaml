@@ -357,6 +357,20 @@ kube-state-metrics:
       memory: 128Mi
 
 # ===========================================
+# 告警规则配置 (混沌工程测试用: 缩短 duration)
+# ===========================================
+defaultRules:
+  # 保留默认告警规则
+  create: true
+  rules:
+    # Pod 状态告警 (缩短 duration 用于混沌工程测试)
+    kubernetes:
+      enabled: true
+
+# 覆盖特定告警规则的 duration (通过 PrometheusRule)
+extraPrometheusRules: false
+
+# ===========================================
 # node-exporter 配置
 # ===========================================
 nodeExporter:

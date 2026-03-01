@@ -1,0 +1,38 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: chaos-testing-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: chaos.pod.alerts
+      interval: 30s
+      rules:
+        # Pod Restart Count - 混沌工程测试专用 (30 秒)
+        - alert: ChaosPodRestart
+          annotations:
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted in last 5m (chaos test).'
+            summary: Pod restarted.
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace=~"online-boutique"}[5m]) > 0
+          for: 30s
+          labels:
+            severity: warning
+            chaos_test: "true"
+
+        # Service Target Down - 混沌工程测试专用 (30 秒)
+        - alert: ChaosServiceDown
+          annotations:
+            description: 'Service {{ $labels.namespace }}/{{ $labels.service }} has no endpoints (chaos test).'
+            summary: Service down.
+          expr: |
+            sum by (namespace, service) (kube_service_status_available_replicas{namespace=~"online-boutique"}) == 0
+          for: 30s
+          labels:
+            severity: warning
+            chaos_test: "true"
