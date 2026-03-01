@@ -192,9 +192,10 @@ grafana:
           enabled: true
         search:
           hide: false
-        # 禁用 TraceQL streaming：Tempo 2.5.0 不支持 /api/search/stream
-        # Grafana 11.x 默认对 traceql 查询用 streaming，会导致 traces 面板永久 loading
-        streamingEnabled: false
+        # Grafana 11.x 的 traces 面板 traceQL 模式需要 Tempo gRPC 端口
+        # 不配置时 Grafana 会尝试用 tempo:3100（HTTP）做 gRPC → frame too large 报错
+        # 配置后 Grafana 通过 tempo:9095（gRPC）做 streaming，正常返回 trace 列表
+        grpcEndpoint: "tempo.monitoring.svc:9095"
 
     # Loki - 日志 (auth_enabled: false, 单租户模式)
     - name: Loki
@@ -276,10 +277,8 @@ grafana:
       logs: /var/log/grafana
       plugins: /var/lib/grafana/plugins
       provisioning: /etc/grafana/provisioning
-    # 禁用 traceQL streaming：Tempo 2.5.0 不支持 /api/search/stream
-    # Grafana 11.x 对 traceql 查询启用了 streaming，会导致 traces 面板永久 loading
     feature_toggles:
-      traceQLStreaming: "false"
+      enable: ""
 
 # ===========================================
 # AlertManager 配置

@@ -136,6 +136,10 @@ service:
       port: 3100
       targetPort: 3100
       protocol: TCP
+    - name: grpc-query
+      port: 9095
+      targetPort: 9095
+      protocol: TCP
 
 serviceMonitor:
   enabled: true
