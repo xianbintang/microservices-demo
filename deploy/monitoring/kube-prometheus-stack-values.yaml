@@ -192,6 +192,9 @@ grafana:
           enabled: true
         search:
           hide: false
+        # 禁用 TraceQL streaming：Tempo 2.5.0 不支持 /api/search/stream
+        # Grafana 11.x 默认对 traceql 查询用 streaming，会导致 traces 面板永久 loading
+        streamingEnabled: false
 
     # Loki - 日志 (auth_enabled: false, 单租户模式)
     - name: Loki
@@ -273,6 +276,10 @@ grafana:
       logs: /var/log/grafana
       plugins: /var/lib/grafana/plugins
       provisioning: /etc/grafana/provisioning
+    # 禁用 traceQL streaming：Tempo 2.5.0 不支持 /api/search/stream
+    # Grafana 11.x 对 traceql 查询启用了 streaming，会导致 traces 面板永久 loading
+    feature_toggles:
+      traceQLStreaming: "false"
 
 # ===========================================
 # AlertManager 配置
