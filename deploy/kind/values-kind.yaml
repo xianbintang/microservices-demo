@@ -1,0 +1,20 @@
+# Use Google registry path (images are pre-loaded into kind via 'kind load docker-image')
+# Default repository: us-central1-docker.pkg.dev/google-samples/microservices-demo
+# Default tag: v0.10.4 (chart appVersion)
+# No override needed for images.repository / images.tag
+
+selfHostedObservability:
+  enabled: true
+  imagePullSecret: ""
+  loki:
+    otlpEndpoint: "http://loki.monitoring.svc:3100/otlp"
+
+volcengineAPM:
+  enabled: false
+
+sreAgent:
+  create: false
+
+frontend:
+  externalService: false
+  platform: local

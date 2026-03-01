@@ -1,0 +1,104 @@
+# kube-prometheus-stack kind overlay
+# Resets all images from private Volcengine registry back to chart defaults (public registries)
+# Removes imagePullSecrets, enables node-exporter, switches Grafana to ClusterIP
+
+# ── Remove global imagePullSecrets ────────────────────────────
+global:
+  imagePullSecrets: []
+
+# ── Prometheus Operator: reset to chart defaults ──────────────
+prometheusOperator:
+  imagePullSecrets: []
+  image:
+    registry: quay.io
+    repository: prometheus-operator/prometheus-operator
+    tag: ""
+  prometheusConfigReloader:
+    image:
+      registry: quay.io
+      repository: prometheus-operator/prometheus-config-reloader
+      tag: ""
+  admissionWebhooks:
+    certgen:
+      image:
+        registry: ghcr.io
+        repository: jkroepke/kube-webhook-certgen
+        tag: ""
+    patch:
+      enabled: false
+
+# ── Prometheus: reset to chart defaults + reduce resources ────
+prometheus:
+  prometheusSpec:
+    imagePullSecrets: []
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.2.1
+    # Reduce for local dev
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    retention: 1d
+    retentionSize: "5GiB"
+    # Remove VKE-specific scrape job (kind has native node-exporter)
+    additionalScrapeConfigs: []
+
+# ── Grafana: public registry, ClusterIP, disable streaming ───
+grafana:
+  imagePullSecrets: []
+  image:
+    registry: docker.io
+    repository: grafana/grafana
+    tag: ""
+  sidecar:
+    image:
+      registry: quay.io
+      repository: kiwigrid/k8s-sidecar
+      tag: "2.5.0"
+  downloadDashboardsImage:
+    registry: docker.io
+    repository: curlimages/curl
+    tag: "8.11.1"
+  initChownData:
+    image:
+      registry: docker.io
+      repository: library/busybox
+      tag: "1.37.0"
+  service:
+    type: ClusterIP
+  # Disable Tempo gRPC streaming (Tempo 2.5.0 doesn't support /api/search/stream)
+  grafana.ini:
+    feature_toggles:
+      traceQLStreaming: "false"
+      enable: ""
+
+# ── AlertManager: reset to chart defaults ─────────────────────
+alertmanager:
+  alertmanagerSpec:
+    imagePullSecrets: []
+    image:
+      registry: quay.io
+      repository: prometheus/alertmanager
+      tag: v0.28.1
+
+# ── kube-state-metrics: reset to chart defaults ───────────────
+kube-state-metrics:
+  image:
+    registry: registry.k8s.io
+    repository: kube-state-metrics/kube-state-metrics
+    tag: ""
+
+# ── node-exporter: enable (no VKE conflict in kind) ──────────
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  image:
+    registry: quay.io
+    repository: prometheus/node-exporter
+    tag: ""

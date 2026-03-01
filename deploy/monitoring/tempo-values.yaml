@@ -68,7 +68,6 @@ tempo:
         path: /var/tempo/wal
       # 启用 snappy 压缩：减少 50~70% 磁盘 I/O，显著提升查询速度
       block:
-        encoding: snappy
         bloom_filter_false_positive: 0.05
         bloom_filter_shard_size_bytes: 100000
 

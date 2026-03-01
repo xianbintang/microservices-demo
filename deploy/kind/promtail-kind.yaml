@@ -1,0 +1,6 @@
+# Use chart default Promtail image — matches chart-generated config
+image:
+  registry: docker.io
+  repository: grafana/promtail
+  tag: ""
+imagePullSecrets: []

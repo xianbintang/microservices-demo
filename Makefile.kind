@@ -1,0 +1,201 @@
+# Makefile.kind — Local kind cluster deployment for Online Boutique
+# Supports: Mac ARM (linux/arm64), Linux AMD64 (linux/amd64)
+# Supports: Docker or Podman as container runtime
+# Usage: make -f Makefile.kind up
+
+# ──────────────────────────────────────────────────────────────
+# Platform detection
+# ──────────────────────────────────────────────────────────────
+ARCH     := $(shell uname -m)
+ifeq ($(ARCH),arm64)
+  PLATFORM := linux/arm64
+else
+  PLATFORM := linux/amd64
+endif
+
+# ──────────────────────────────────────────────────────────────
+# Container runtime: prefer podman, fall back to docker
+# ──────────────────────────────────────────────────────────────
+DOCKER := $(shell which podman 2>/dev/null || which docker 2>/dev/null)
+ifeq ($(findstring podman,$(DOCKER)),podman)
+  KIND_PROVIDER_ENV := KIND_EXPERIMENTAL_PROVIDER=podman
+else
+  KIND_PROVIDER_ENV :=
+endif
+KIND := $(KIND_PROVIDER_ENV) kind
+
+# ──────────────────────────────────────────────────────────────
+# Image source (Google public registry — pre-loaded into kind)
+# ──────────────────────────────────────────────────────────────
+GOOGLE_REGISTRY := us-central1-docker.pkg.dev/google-samples/microservices-demo
+IMAGE_TAG       := v0.10.4
+
+# ──────────────────────────────────────────────────────────────
+# Cluster / namespaces
+# ──────────────────────────────────────────────────────────────
+CLUSTER_NAME    := online-boutique
+KIND_CONFIG     := deploy/kind/kind-config.yaml
+DEPLOY_NS       := online-boutique
+MONITORING_NS   := monitoring
+
+# ──────────────────────────────────────────────────────────────
+# App services to pull/retag
+# ──────────────────────────────────────────────────────────────
+APP_SERVICES := frontend checkoutservice shippingservice productcatalogservice \
+                recommendationservice emailservice paymentservice currencyservice \
+                loadgenerator adservice cartservice
+
+.PHONY: all up down check-prereqs create-cluster \
+        pull-images deploy-monitoring deploy-app port-forward status \
+        deploy-remote
+
+all: up  ## Alias for 'up'
+
+## ── One-click full deploy ──────────────────────────────────────
+up: check-prereqs create-cluster pull-images \
+    deploy-monitoring deploy-app port-forward status
+
+## ── Prerequisites check ───────────────────────────────────────
+check-prereqs:
+	@if [ -z "$(DOCKER)" ]; then \
+	  echo "ERROR: neither podman nor docker found. Install one first." && exit 1; \
+	fi
+	@for tool in kind kubectl helm; do \
+	  which $$tool > /dev/null 2>&1 || (echo "ERROR: $$tool not found. Install it first." && exit 1); \
+	done
+	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+	@helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+	@helm repo update
+	@echo "✓ Prerequisites OK (platform: $(PLATFORM), runtime: $(DOCKER))"
+
+## ── Kind cluster ──────────────────────────────────────────────
+create-cluster:
+	@if ! $(KIND) get clusters 2>/dev/null | grep -q "^$(CLUSTER_NAME)$$"; then \
+	  $(KIND) create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG); \
+	  echo "✓ Cluster created"; \
+	else \
+	  echo "✓ Cluster already exists"; \
+	fi
+	@kubectl config use-context kind-$(CLUSTER_NAME)
+	@echo "✓ Cluster ready"
+
+## ── Pull images & load into kind (no registry needed) ─────────
+pull-images:
+	@echo "Pulling & loading app images into kind (platform: $(PLATFORM))..."
+	@for svc in $(APP_SERVICES); do \
+	  echo "  → $$svc"; \
+	  $(DOCKER) pull --platform $(PLATFORM) $(GOOGLE_REGISTRY)/$$svc:$(IMAGE_TAG) && \
+	  $(KIND) load docker-image --name $(CLUSTER_NAME) \
+	    $(GOOGLE_REGISTRY)/$$svc:$(IMAGE_TAG); \
+	done
+	@echo "  → redis (retag to match chart repository prefix)"
+	@$(DOCKER) pull --platform $(PLATFORM) redis:alpine && \
+	  $(DOCKER) tag redis:alpine $(GOOGLE_REGISTRY)/redis:alpine && \
+	  $(KIND) load docker-image --name $(CLUSTER_NAME) $(GOOGLE_REGISTRY)/redis:alpine
+	@echo "  → opentelemetry-collector-contrib (retag to match chart repository prefix)"
+	@$(DOCKER) pull --platform $(PLATFORM) otel/opentelemetry-collector-contrib:0.144.0 && \
+	  $(DOCKER) tag otel/opentelemetry-collector-contrib:0.144.0 \
+	    $(GOOGLE_REGISTRY)/opentelemetry-collector-contrib:0.144.0 && \
+	  $(KIND) load docker-image --name $(CLUSTER_NAME) \
+	    $(GOOGLE_REGISTRY)/opentelemetry-collector-contrib:0.144.0
+	@echo "✓ All images loaded into kind cluster"
+
+## ── Monitoring stack ──────────────────────────────────────────
+deploy-monitoring:
+	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -f deploy/monitoring/dashboards/grafana-dashboards-configmap.yaml \
+	  -n $(MONITORING_NS)
+	@echo "Deploying kube-prometheus-stack..."
+	@helm upgrade --install kube-prometheus-stack \
+	  prometheus-community/kube-prometheus-stack \
+	  -n $(MONITORING_NS) \
+	  -f deploy/monitoring/kube-prometheus-stack-values.yaml \
+	  -f deploy/kind/kube-prometheus-stack-kind.yaml \
+	  --timeout 10m --wait
+	@echo "Deploying Loki..."
+	@helm upgrade --install loki grafana/loki -n $(MONITORING_NS) \
+	  -f deploy/monitoring/loki-values.yaml \
+	  -f deploy/kind/loki-kind.yaml \
+	  --timeout 5m --wait
+	@echo "Deploying Tempo..."
+	@helm upgrade --install tempo grafana/tempo -n $(MONITORING_NS) \
+	  -f deploy/monitoring/tempo-values.yaml \
+	  -f deploy/kind/tempo-kind.yaml \
+	  --timeout 5m --wait
+	@echo "Deploying Promtail..."
+	@helm upgrade --install promtail grafana/promtail -n $(MONITORING_NS) \
+	  -f deploy/monitoring/promtail-values.yaml \
+	  -f deploy/kind/promtail-kind.yaml \
+	  --timeout 5m --wait
+	@echo "✓ Monitoring stack deployed"
+
+## ── Online Boutique app ───────────────────────────────────────
+deploy-app:
+	@kubectl create namespace $(DEPLOY_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@helm upgrade --install online-boutique helm-chart/ \
+	  -n $(DEPLOY_NS) \
+	  -f deploy/kind/values-kind.yaml \
+	  --timeout 10m --wait
+	@echo "✓ Online Boutique deployed"
+
+## ── Port forwarding ───────────────────────────────────────────
+port-forward:
+	@pkill -f "port-forward.*frontend.*8080" 2>/dev/null || true
+	@pkill -f "port-forward.*grafana.*3000" 2>/dev/null || true
+	@kubectl port-forward -n $(DEPLOY_NS) svc/frontend 8080:80 &
+	@kubectl port-forward -n $(MONITORING_NS) svc/kube-prometheus-stack-grafana 3000:80 &
+	@sleep 2
+	@echo ""
+	@echo "════════════════════════════════════════════════"
+	@echo "  Frontend : http://localhost:8080"
+	@echo "  Grafana  : http://localhost:3000  (admin/admin)"
+	@echo "════════════════════════════════════════════════"
+
+## ── Pod status ────────────────────────────────────────────────
+status:
+	@echo "\n=== App Pods ($(DEPLOY_NS)) ==="
+	@kubectl get pods -n $(DEPLOY_NS)
+	@echo "\n=== Monitoring Pods ($(MONITORING_NS)) ==="
+	@kubectl get pods -n $(MONITORING_NS)
+
+## ── Teardown ──────────────────────────────────────────────────
+down:
+	@pkill -f "port-forward.*8080" 2>/dev/null || true
+	@pkill -f "port-forward.*3000" 2>/dev/null || true
+	@$(KIND) delete cluster --name $(CLUSTER_NAME) 2>/dev/null || true
+	@echo "✓ Cluster destroyed"
+
+## ── Remote K8s deployment ─────────────────────────────────────
+# Usage: make -f Makefile.kind deploy-remote REGISTRY=your.registry.com [CONTEXT=my-context]
+deploy-remote:
+	$(if $(REGISTRY),,$(error REGISTRY is required. Usage: make -f Makefile.kind deploy-remote REGISTRY=your.registry.com))
+	$(if $(CONTEXT),kubectl config use-context $(CONTEXT),)
+	@kubectl create namespace $(DEPLOY_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -f deploy/monitoring/dashboards/grafana-dashboards-configmap.yaml \
+	  -n $(MONITORING_NS)
+	@helm upgrade --install kube-prometheus-stack \
+	  prometheus-community/kube-prometheus-stack \
+	  -n $(MONITORING_NS) \
+	  -f deploy/monitoring/kube-prometheus-stack-values.yaml \
+	  --timeout 10m
+	@helm upgrade --install loki grafana/loki \
+	  -n $(MONITORING_NS) \
+	  -f deploy/monitoring/loki-values.yaml \
+	  --timeout 5m
+	@helm upgrade --install tempo grafana/tempo \
+	  -n $(MONITORING_NS) \
+	  -f deploy/monitoring/tempo-values.yaml \
+	  --timeout 5m
+	@helm upgrade --install promtail grafana/promtail \
+	  -n $(MONITORING_NS) \
+	  -f deploy/monitoring/promtail-values.yaml \
+	  --timeout 5m
+	@helm upgrade --install online-boutique helm-chart/ \
+	  -n $(DEPLOY_NS) \
+	  --set images.repository=$(REGISTRY) \
+	  --set selfHostedObservability.enabled=true \
+	  --set volcengineAPM.enabled=false \
+	  --set sreAgent.create=false \
+	  --timeout 10m
+	@echo "✓ Remote deploy complete"
