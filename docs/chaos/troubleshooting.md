@@ -1,5 +1,9 @@
 # 混沌实验故障排除指南
 
+## 核心原则
+
+**告警规则必须代码固化** - 所有告警规则必须存储在代码仓库中（`deploy/monitoring/alerting/`），禁止使用临时 `kubectl apply` 命令创建告警规则。
+
 ## 常见问题和解决方案
 
 ### 实验被拒绝（命名空间/资源黑名单）
@@ -37,14 +41,27 @@ selector:
 
 #### 解决方案
 1. 运行告警覆盖度检查，识别缺失的告警
-2. 添加缺失的告警规则
-3. 重新执行告警覆盖度检查
+2. **在代码仓库中添加缺失的告警规则**（禁止使用临时 kubectl apply）
+3. 提交代码并通过代码审查
+4. 重新部署告警规则
+5. 重新执行告警覆盖度检查
 
 ```bash
 # 检查告警覆盖度
 /chaos-check-alerts online-boutique
 
-# 添加告警规则后重新检查
+# 修改代码: deploy/monitoring/alerting/chaos-testing-alerts.yaml
+# 添加缺失的告警规则
+
+# 提交代码
+git add deploy/monitoring/alerting/chaos-testing-alerts.yaml
+git commit -m "feat: add missing alert rule for xxx"
+
+# 部署告警规则
+kubectl apply -f deploy/monitoring/alerting/chaos-testing-alerts.yaml
+
+# 重新检查
+/chaos-check-alerts online-boutique
 ```
 
 详见 [告警覆盖度检查指南](./alert-coverage-check-guide.md)
