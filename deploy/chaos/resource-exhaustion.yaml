@@ -1,0 +1,25 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: resource-exhaustion
+  namespace: monitoring
+  annotations:
+    chaos.mes.org/description: "Resource exhaustion experiment"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "HighCPUUsage,HighMemoryUsage,PodOOMKilled,CPUThrottlingHigh"
+  labels:
+    chaos.mes.org/type: resource-exhaustion
+    chaos.mes.org/namespace: online-boutique
+spec:
+  mode: one
+  value: "1"
+  duration: "5m"
+  selector:
+    namespaces:
+      - online-boutique
+    labelSelectors:
+      app.kubernetes.io/name: checkoutservice
+  stressors:
+    cpu:
+      workers: 2
+      load: 90

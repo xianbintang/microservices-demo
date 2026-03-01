@@ -1,0 +1,25 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodNetworkChaos
+metadata:
+  name: dependency-failure
+  namespace: monitoring
+  annotations:
+    chaos.mes.org/description: "Service dependency failure experiment"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "ServiceUnavailable,DependencyErrorRateHigh,CircuitBreakerOpen"
+  labels:
+    chaos.mes.org/type: dependency-failure
+    chaos.mes.org/namespace: online-boutique
+    chaos.mes.org/upstream-service: frontend
+    chaos.mes.org/dependency-service: adservice
+spec:
+  action: partition
+  mode: one
+  value: "1"
+  duration: "3m"
+  selector:
+    namespaces:
+      - online-boutique
+    labelSelectors:
+      app.kubernetes.io/name: adservice
+  direction: to

@@ -1,0 +1,23 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-failure
+  namespace: monitoring
+  annotations:
+    chaos.mes.org/description: "Pod failure experiment"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "PodNotReady,ServiceUnavailable"
+  labels:
+    chaos.mes.org/type: pod-failure
+    chaos.mes.org/namespace: online-boutique
+    chaos.mes.org/status: "pending"
+spec:
+  action: pod-kill
+  mode: one
+  value: "1"
+  duration: "2m"
+  selector:
+    namespaces:
+      - online-boutique
+    labelSelectors:
+      app.kubernetes.io/name: frontend

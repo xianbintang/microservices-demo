@@ -1,6 +1,6 @@
 ## 1. 告警覆盖度检查
 
-- [ ] 1.1 定义关键告警场景清单
+- [x] 1.1 定义关键告警场景清单
   - 定义 Pod 状态相关告警场景（PodDown, PodNotReady, PodCrashLoopBackOff）
   - 定义服务可用性相关告警场景（ServiceDown, ServiceUnavailable）
   - 定义性能指标相关告警场景（HighLatency, HighErrorRate, High5xxRate）
@@ -9,19 +9,19 @@
   - 定义熔断器相关告警场景（CircuitBreakerOpen）
   - 为每个场景定义必需的严重级别
 
-- [ ] 1.2 创建告警覆盖度检查脚本
+- [x] 1.2 创建告警覆盖度检查脚本
   - 创建脚本扫描当前告警规则（PrometheusRule/AlertManagerConfig）
   - 对比关键告警场景清单
   - 识别缺失的告警规则
   - 计算告警覆盖率
   - 生成检查报告
 
-- [ ] 1.3 定义告警覆盖率阈值
+- [x] 1.3 定义告警覆盖率阈值
   - 定义覆盖率阈值（如 ≥ 80% 允许执行实验）
   - 定义关键场景要求（所有关键场景必须有告警覆盖）
   - 定义告警严重级别要求（关键场景必须有 Critical 级别）
 
-- [ ] 1.4 创建告警覆盖度检查报告模板
+- [x] 1.4 创建告警覆盖度检查报告模板
   - 设计报告结构（检查时间、覆盖度统计、已覆盖告警、缺失告警、评估结果、操作建议）
   - 创建报告模板文件（docs/chaos/alert-coverage-report-template.md）
   - 定义阻塞状态逻辑

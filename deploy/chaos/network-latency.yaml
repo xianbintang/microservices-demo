@@ -1,0 +1,26 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-latency
+  namespace: monitoring
+  annotations:
+    chaos.mes.org/description: "Network latency experiment"
+    chaos.mes.org/observability: "enable"
+    chaos.mes.org/expected-alerts: "HighLatency,High5xxRate"
+  labels:
+    chaos.mes.org/type: network-latency
+    chaos.mes.org/namespace: online-boutique
+spec:
+  action: delay
+  mode: one
+  value: "1"
+  duration: "3m"
+  selector:
+    namespaces:
+      - online-boutique
+    labelSelectors:
+      app.kubernetes.io/name: recommendationservice
+  delay:
+    latency: 500ms
+    jitter: 50ms
+  direction: to
