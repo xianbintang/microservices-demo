@@ -5,7 +5,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
   name: pod-failure-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: pod-failure
     chaos.mes.org/namespace: online-boutique

@@ -5,31 +5,25 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: resource-exhaustion-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: resource-exhaustion
     chaos.mes.org/namespace: online-boutique
   annotations:
     chaos.mes.org/description: "Resource exhaustion experiment - applies CPU or memory stress to test graceful degradation"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "HighCPUUsage,HighMemoryUsage,PodOOMKilled,CPUThrottlingHigh"
+    chaos.mes.org/expected-alerts: "ChaosCPUThrottling,ChaosHighMemoryUsage"
 spec:
   mode: one
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
-      # 可以指定服务，例如:
-      # app: checkoutservice
-  # CPU 压力配置
+      app: checkoutservice
   stressors:
     cpu:
       workers: 2
       load: 90
-    # 内存压力配置（可选择其一或两者都启用）
-    memory:
-      size: "80%"
-  # 持续时间
   duration: "5m"
 
 ---
@@ -38,19 +32,21 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: cpu-stress-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: cpu-stress
     chaos.mes.org/namespace: online-boutique
   annotations:
     chaos.mes.org/description: "CPU stress experiment - tests system under high CPU load"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "HighCPUUsage,CPUThrottlingHigh"
+    chaos.mes.org/expected-alerts: "ChaosCPUThrottling"
 spec:
   mode: one
   selector:
     namespaces:
       - online-boutique
+    labelSelectors:
+      app: checkoutservice
   stressors:
     cpu:
       workers: 2
@@ -63,20 +59,22 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: memory-stress-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: memory-stress
     chaos.mes.org/namespace: online-boutique
   annotations:
     chaos.mes.org/description: "Memory stress experiment - tests system under high memory pressure"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "HighMemoryUsage,PodOOMKilled"
+    chaos.mes.org/expected-alerts: "ChaosHighMemoryUsage"
 spec:
   mode: one
   selector:
     namespaces:
       - online-boutique
+    labelSelectors:
+      app: checkoutservice
   stressors:
     memory:
-      size: "80%"
+      size: "512MiB"
   duration: "5m"

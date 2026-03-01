@@ -2,17 +2,17 @@
 # 测试服务依赖故障时的系统弹性和降级能力
 
 apiVersion: chaos-mesh.org/v1alpha1
-kind: PodNetworkChaos
+kind: NetworkChaos
 metadata:
   name: dependency-failure-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: dependency-failure
     chaos.mes.org/namespace: online-boutique
   annotations:
     chaos.mes.org/description: "Dependency failure experiment - isolates a service to simulate dependency unavailability"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "ServiceUnavailable,DependencyErrorRateHigh,CircuitBreakerOpen"
+    chaos.mes.org/expected-alerts: "ChaosPodRestart,ChaosHighErrorRate"
 spec:
   action: partition
   mode: one
@@ -20,26 +20,6 @@ spec:
     namespaces:
       - online-boutique
     labelSelectors:
-      # 依赖服务，例如:
       app: adservice
   direction: both
   duration: "3m"
-  # 可选：添加 HTTP 故障（需要 HTTPChaos）
-  # ---
-  # apiVersion: chaos-mesh.org/v1alpha1
-  # kind: HTTPChaos
-  # metadata:
-  #   name: http-failure-experiment
-  # spec:
-  #   mode: one
-  #   selector:
-  #     namespaces:
-  #       - online-boutique
-  #     labelSelectors:
-  #       app: adservice
-  #   target: Request
-  #   port: 9555
-  #   path: "*"
-  #   method: "*"
-  #   abort: true
-  #   duration: "3m"

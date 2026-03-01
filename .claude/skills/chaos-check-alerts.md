@@ -26,72 +26,77 @@
 
 ## 关键告警场景清单
 
-| 类别 | 关键场景 | 必需告警 | 严重级别 |
-|------|---------|---------|---------|
-| Pod 状态 | Pod 崩溃/终止 | PodDown/PodNotReady | Critical |
-| Pod 状态 | Pod 重启次数过多 | PodRestartTooMany | Warning |
-| Pod 状态 | Pod CrashLoopBackOff | PodCrashLoopBackOff | Critical |
-| 服务可用性 | 服务完全不可用 | ServiceDown | Critical |
-| 服务可用性 | 服务部分不可用 | ServiceUnavailable | Warning |
-| 性能指标 | 高延迟（P95） | HighLatency | Warning |
-| 性能指标 | 高错误率 | HighErrorRate | Warning |
-| 性能指标 | 高 5xx 率 | High5xxRate | Critical |
-| 资源使用 | CPU 使用率过高 | HighCPUUsage | Warning |
-| 资源使用 | 内存使用率过高 | HighMemoryUsage | Warning |
-| 资源使用 | Pod OOM | PodOOMKilled | Critical |
-| 资源使用 | CPU 节流严重 | CPUThrottlingHigh | Warning |
-| 依赖服务 | 上游错误率高 | DependencyErrorRateHigh | Warning |
-| 依赖服务 | 依赖服务超时 | DependencyTimeout | Warning |
-| 熔断器 | 熔断器打开 | CircuitBreakerOpen | Warning |
+检查 `deploy/monitoring/alerting/chaos-testing-alerts.yaml` 中以下告警规则是否存在且在 Prometheus 中状态为 `ok`：
+
+| 类别 | 关键场景 | 实际告警名称 | 严重级别 |
+|------|---------|------------|---------|
+| Pod 状态 | Pod 崩溃/终止 | ChaosPodDown | Critical |
+| Pod 状态 | Pod 未就绪 | ChaosPodNotReady | Critical |
+| Pod 状态 | Pod 重启次数过多 | ChaosPodRestart | Warning |
+| Pod 状态 | Pod CrashLoopBackOff | ChaosPodCrashLoopBackOff | Critical |
+| Pod 状态 | Pod OOM 终止 | ChaosOOMKilled | Critical |
+| 服务可用性 | 服务无就绪 Pod | ChaosServiceDown | Critical |
+| 性能指标 | 高延迟（P95 > 2s） | ChaosHighLatency | Warning |
+| 性能指标 | 高错误率（> 10%） | ChaosHighErrorRate | Critical |
+| 资源使用 | CPU 节流严重（> 50%） | ChaosCPUThrottling | Warning |
+| 资源使用 | CPU 使用过高（> 0.5 core） | ChaosHighCPUUsage | Warning |
+| 资源使用 | 内存使用过高（> 400MiB） | ChaosHighMemoryUsage | Warning |
+| 熔断器 | 熔断器打开 | N/A（Online Boutique 未实现熔断器） | - |
+
+**检查方式**：
+```bash
+kubectl exec -n monitoring $(kubectl get pod -n monitoring -l app=prometheus -o jsonpath='{.items[0].metadata.name}') \
+  -- wget -qO- 'http://localhost:9090/api/v1/rules?type=alert' | \
+  python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+chaos_alerts = {r['name']: r['health'] for g in data['data']['groups'] for r in g['rules'] if r['name'].startswith('Chaos')}
+required = ['ChaosPodDown','ChaosPodNotReady','ChaosPodRestart','ChaosPodCrashLoopBackOff',
+            'ChaosOOMKilled','ChaosServiceDown','ChaosHighLatency','ChaosHighErrorRate',
+            'ChaosCPUThrottling','ChaosHighCPUUsage','ChaosHighMemoryUsage']
+covered = [a for a in required if chaos_alerts.get(a) == 'ok']
+missing = [a for a in required if a not in covered]
+print(f'覆盖: {len(covered)}/{len(required)} ({len(covered)/len(required)*100:.0f}%)')
+for a in covered: print(f'  ✅ {a}')
+for a in missing: print(f'  ❌ {a} (缺失)')
+print('允许执行实验' if len(covered)/len(required) >= 0.8 else '阻塞: 告警覆盖率不足 80%')
+"
+```
 
 ## 覆盖率阈值
 
-- **总体覆盖率**: ≥ 80%
-- **关键场景覆盖率**: 100% (所有 Critical 级别场景必须有告警覆盖)
+- **总体覆盖率**: ≥ 80%（11 个 required 中至少 9 个 ok）
+- **Critical 场景**: ChaosPodDown、ChaosPodNotReady、ChaosPodCrashLoopBackOff、ChaosOOMKilled、ChaosServiceDown、ChaosHighErrorRate 必须全部覆盖
 
 ## 输出示例
 
 ```
 告警覆盖度检查报告
 ====================
-检查时间: 2024-01-01 10:00:00
+检查时间: 2026-03-02 10:00:00
 
-覆盖度统计:
-- 关键场景总数: 15
-- 已覆盖场景数: 13
-- 缺失场景数: 2
-- 告警覆盖率: 86.7% ✅
-
-已覆盖的告警:
-✅ PodDown
-✅ PodNotReady
-✅ ServiceDown
-✅ HighLatency
-✅ HighErrorRate
-✅ High5xxRate
-✅ HighCPUUsage
-✅ HighMemoryUsage
-...
-
-缺失的告警:
-❌ PodOOMKilled (关键)
-❌ CircuitBreakerOpen (重要)
-
-评估结果:
-- 覆盖率: 86.7% ✅
-- 关键缺失: 1 个 ⚠️
-- 建议: 补充 PodOOMKilled 告警规则后再执行资源实验
-
-阻塞状态: ⚠️ 允许执行非资源实验，资源实验需要补充告警
+覆盖: 11/11 (100%)
+  ✅ ChaosPodDown
+  ✅ ChaosPodNotReady
+  ✅ ChaosPodRestart
+  ✅ ChaosPodCrashLoopBackOff
+  ✅ ChaosOOMKilled
+  ✅ ChaosServiceDown
+  ✅ ChaosHighLatency
+  ✅ ChaosHighErrorRate
+  ✅ ChaosCPUThrottling
+  ✅ ChaosHighCPUUsage
+  ✅ ChaosHighMemoryUsage
+允许执行实验
 ```
 
 ## 验收标准
 
-- [ ] 能正确扫描当前告警规则
-- [ ] 能准确对比关键场景清单
-- [ ] 能计算正确的覆盖率
-- [ ] 能生成可读的检查报告
-- [ ] 能正确判断是否允许执行实验
+- [x] 能正确扫描当前告警规则
+- [x] 能准确对比关键场景清单
+- [x] 能计算正确的覆盖率
+- [x] 能生成可读的检查报告
+- [x] 能正确判断是否允许执行实验
 
 ## 相关文档
 

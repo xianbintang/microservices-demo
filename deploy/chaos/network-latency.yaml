@@ -5,7 +5,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
   name: network-latency-experiment
-  namespace: monitoring
+  namespace: online-boutique
   labels:
     chaos.mes.org/type: network-latency
     chaos.mes.org/namespace: online-boutique

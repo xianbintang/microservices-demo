@@ -9,39 +9,66 @@
 ## 用法
 
 ```
-/chaos-monitor [experiment-id]
+/chaos-monitor [name]
 ```
 
 ### 参数
 
-- `experiment-id`: 可选，指定实验 ID（默认：显示所有运行中的实验）
+- `name`: 可选，指定实验名称（如 `pod-failure-experiment`，默认：显示所有运行中实验）
+
+## 执行步骤
+
+1. 查询所有运行中的 Chaos Mesh CRD：
+   ```bash
+   kubectl get podchaos,networkchaos,stresschaos --all-namespaces
+   ```
+
+2. 查询目标服务当前 Pod 状态：
+   ```bash
+   kubectl get pods -n online-boutique -l app=<service>
+   ```
+
+3. 查询实时错误率（Prometheus）：
+   ```promql
+   rate(traces_spanmetrics_calls_total{service_name="<service>",status_code!="STATUS_CODE_OK"}[1m])
+   / rate(traces_spanmetrics_calls_total{service_name="<service>"}[1m])
+   ```
+
+4. 查询 P95 延迟（Prometheus）：
+   ```promql
+   histogram_quantile(0.95, rate(traces_spanmetrics_duration_milliseconds_bucket{service_name="<service>"}[1m]))
+   ```
+
+5. 查询当前触发的 Chaos 告警（Alertmanager）：
+   ```bash
+   kubectl exec -n monitoring alertmanager-kube-prometheus-stack-alertmanager-0 -- \
+     wget -qO- 'http://localhost:9093/api/v2/alerts?filter=chaos_test%3D%22true%22'
+   ```
 
 ## 输出示例
 
+**有实验运行时：**
 ```
 混沌实验监控
 ============
 运行中的实验: 1
 
-实验 1: pod-failure-20240101-100000
+实验: pod-failure-experiment (online-boutique)
 -------------------------------------
-状态: Running (已运行 45s / 2m)
+类型: PodChaos - pod-kill
 目标服务: frontend
-故障类型: PodKill
+状态: Running
 
 实时指标:
-Pod 状态: Running (15s 前) → Ready (5s 前)
-Service endpoints: 3/3 (已更新)
-错误率: 3.2% (基准: 0.1%) ⚠️
-P95 延迟: 180ms (基准: 80ms)
-QPS: 142 (基准: 150)
+Pod 状态: 0/1 Ready ⚠️
+错误率: 3.2% (基准: ~0%) ⚠️
+P95 延迟: 180ms (基准: ~80ms)
 
-告警状态:
-✅ PodNotReady: 已触发 (30s 前触发，25s 前恢复)
-⏳ ServiceUnavailable: 等待中
+触发告警:
+⚡ ChaosPodNotReady (30s 前)
+⚡ ChaosPodRestart (45s 前)
 
-Grafana 大盘:
-http://localhost:3000/d/chaos-experiments?var-experiment=pod-failure-20240101-100000
+Grafana: http://localhost:3000 (在线 boutique 大盘)
 
 下一步:
 - 使用 /chaos-validate-alerts 验证告警触发
@@ -49,10 +76,22 @@ http://localhost:3000/d/chaos-experiments?var-experiment=pod-failure-20240101-10
 - 使用 /chaos-abort 中止实验
 ```
 
+**无实验运行时：**
+```
+混沌实验监控
+============
+运行中的实验: 0
+
+kubectl get podchaos,networkchaos,stresschaos --all-namespaces
+→ No resources found
+
+状态: 无运行中实验，可以发起新实验
+```
+
 ## 验收标准
 
-- [ ] 能正确查询运行中的实验
-- [ ] 能获取实时关键指标
-- [ ] 能显示告警状态
-- [ ] 能提供 Grafana 大盘链接
-- [ ] 能提供下一步操作指引
+- [x] 能正确查询运行中的实验（`--all-namespaces`）
+- [x] 能获取实时关键指标（Pod 状态、错误率、P95 延迟）
+- [x] 能显示告警状态（通过 Alertmanager API）
+- [x] 能在无实验时输出"无运行中实验"而非报错
+- [x] 能提供下一步操作指引

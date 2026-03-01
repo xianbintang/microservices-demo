@@ -25,16 +25,67 @@ spec:
             severity: warning
             chaos_test: "true"
 
-        # Service Target Down - 混沌工程测试专用 (30 秒)
-        - alert: ChaosServiceDown
+        # Pod Not Ready - 混沌工程测试专用
+        - alert: ChaosPodNotReady
           annotations:
-            description: 'Service {{ $labels.namespace }}/{{ $labels.service }} has no endpoints (chaos test).'
-            summary: Service down.
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready (chaos test).'
+            summary: Pod not ready.
           expr: |
-            sum by (namespace, service) (kube_service_status_available_replicas{namespace=~"online-boutique"}) == 0
+            kube_pod_status_ready{namespace="online-boutique", condition="true"} == 0
           for: 30s
           labels:
-            severity: warning
+            severity: critical
+            chaos_test: "true"
+
+        # Pod Down / Failed - 混沌工程测试专用
+        - alert: ChaosPodDown
+          annotations:
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is in Failed/Unknown phase (chaos test).'
+            summary: Pod down.
+          expr: |
+            kube_pod_status_phase{namespace="online-boutique", phase=~"Failed|Unknown"} > 0
+          for: 30s
+          labels:
+            severity: critical
+            chaos_test: "true"
+
+        # CrashLoopBackOff - 混沌工程测试专用
+        - alert: ChaosPodCrashLoopBackOff
+          annotations:
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff (chaos test).'
+            summary: Pod in CrashLoopBackOff.
+          expr: |
+            kube_pod_container_status_waiting_reason{namespace="online-boutique", reason="CrashLoopBackOff"} == 1
+          for: 30s
+          labels:
+            severity: critical
+            chaos_test: "true"
+
+        # OOMKilled - 混沌工程测试专用
+        - alert: ChaosOOMKilled
+          annotations:
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled (chaos test).'
+            summary: Pod OOM killed.
+          expr: |
+            kube_pod_container_status_last_terminated_reason{namespace="online-boutique", reason="OOMKilled"} == 1
+          for: 0s
+          labels:
+            severity: critical
+            chaos_test: "true"
+
+        # Service Down (no pods ready) - 混沌工程测试专用
+        # 修复: 原规则使用了不存在的 kube_service_status_available_replicas，改用 kube_pod_status_ready
+        - alert: ChaosServiceDown
+          annotations:
+            description: 'All pods for a service in namespace {{ $labels.namespace }} are not ready (chaos test).'
+            summary: Service has no ready pods.
+          expr: |
+            (
+              sum by (namespace, pod) (kube_pod_status_ready{namespace="online-boutique", condition="true"})
+            ) == 0
+          for: 30s
+          labels:
+            severity: critical
             chaos_test: "true"
 
     - name: chaos.latency.alerts
@@ -64,4 +115,51 @@ spec:
           for: 30s
           labels:
             severity: critical
+            chaos_test: "true"
+
+    - name: chaos.resource.alerts
+      interval: 30s
+      rules:
+        # CPU Throttling High - 混沌工程测试专用
+        - alert: ChaosCPUThrottling
+          annotations:
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU throttling rate > 50% (chaos test).'
+            summary: High CPU throttling detected.
+          expr: |
+            (
+              rate(container_cpu_cfs_throttled_periods_total{namespace="online-boutique", container!=""}[5m])
+              /
+              rate(container_cpu_cfs_periods_total{namespace="online-boutique", container!=""}[5m])
+            ) > 0.5
+          for: 30s
+          labels:
+            severity: warning
+            chaos_test: "true"
+
+        # High CPU Usage - 混沌工程测试专用 (绝对值 > 0.5 core)
+        - alert: ChaosHighCPUUsage
+          annotations:
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU usage > 0.5 core (chaos test).'
+            summary: High CPU usage detected.
+          expr: |
+            sum by (namespace, pod, container) (
+              rate(container_cpu_usage_seconds_total{namespace="online-boutique", container!=""}[5m])
+            ) > 0.5
+          for: 30s
+          labels:
+            severity: warning
+            chaos_test: "true"
+
+        # High Memory Usage - 混沌工程测试专用 (绝对值 > 400MiB)
+        - alert: ChaosHighMemoryUsage
+          annotations:
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} memory working set > 400MiB (chaos test).'
+            summary: High memory usage detected.
+          expr: |
+            sum by (namespace, pod, container) (
+              container_memory_working_set_bytes{namespace="online-boutique", container!=""}
+            ) > 400 * 1024 * 1024
+          for: 30s
+          labels:
+            severity: warning
             chaos_test: "true"
