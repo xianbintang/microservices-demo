@@ -6,20 +6,23 @@ metadata:
   annotations:
     chaos.mes.org/description: "Resource exhaustion experiment"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "HighCPUUsage,HighMemoryUsage,PodOOMKilled,CPUThrottlingHigh"
+    chaos.mes.org/expected-alerts: "CPUThrottlingHigh,NodeCPUHighUsage,NodeMemoryHighUtilization"
   labels:
     chaos.mes.org/type: resource-exhaustion
     chaos.mes.org/namespace: online-boutique
 spec:
   mode: one
   value: "1"
-  duration: "5m"
+  duration: "3m"
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
-      app.kubernetes.io/name: checkoutservice
+      app: checkoutservice
   stressors:
     cpu:
       workers: 2
-      load: 90
+      load: 80
+    memory:
+      workers: 1
+      size: "128MB"

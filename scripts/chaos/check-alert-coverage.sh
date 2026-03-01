@@ -37,8 +37,8 @@ print_header() {
 
 # 从告警场景清单中提取必需告警
 extract_critical_alerts() {
-    grep -E '^\|\s+\w+\s+\|\s+\w+\s+\|\s+是\s+\|' "$CRITICAL_ALERT_SCENARIOS_FILE" | \
-        awk -F'|' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' | \
+    grep -E '^\|' "$CRITICAL_ALERT_SCENARIOS_FILE" | grep -vE '^\|\s*(场景|[-]+)\s*\|' | \
+        awk -F'|' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); if (length($2) > 0) print $2}' | \
         sort -u
 }
 

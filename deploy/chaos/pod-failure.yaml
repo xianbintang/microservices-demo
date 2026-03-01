@@ -6,7 +6,7 @@ metadata:
   annotations:
     chaos.mes.org/description: "Pod failure experiment"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "PodNotReady,ServiceUnavailable"
+    chaos.mes.org/expected-alerts: "KubePodNotReady,TargetDown"
   labels:
     chaos.mes.org/type: pod-failure
     chaos.mes.org/namespace: online-boutique
@@ -20,4 +20,4 @@ spec:
     namespaces:
       - online-boutique
     labelSelectors:
-      app.kubernetes.io/name: frontend
+      app: frontend
