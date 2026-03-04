@@ -5,7 +5,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
   name: dependency-failure-experiment
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: dependency-failure
     chaos.mes.org/namespace: online-boutique

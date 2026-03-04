@@ -25,6 +25,10 @@
 5. 验证资源清理完成
 6. 显示中止结果
 
+## 实验 ID 约定
+
+实验 ID 使用手动命名格式：`<type>-<service>-YYYYMMDD-HHMMSS`，与注入时保持一致。
+
 ## 输出示例
 
 ```
@@ -32,14 +36,17 @@
 ============
 找到运行中的实验: 1
 
-实验 1: pod-failure-20240101-100000
+实验 1: pod-failure-frontend-20260301-100000 (PodChaos)
 状态: Running (已运行 90s / 2m)
 目标服务: frontend
 
 正在中止...
 1. 删除 PodChaos CRD... ✅
+   kubectl delete podchaos pod-failure-frontend-20260301-100000 -n chaos-mesh
 2. 等待故障移除... ✅
 3. 验证资源清理... ✅
+   kubectl get podchaos,networkchaos,stresschaos -n chaos-mesh
+   → No resources found
 
 中止完成:
 - 实验已中止
@@ -55,8 +62,8 @@
 
 ## 验收标准
 
-- [ ] 能正确获取运行中的实验
-- [ ] 能成功中止实验
-- [ ] 能验证资源清理完成
-- [ ] 能显示中止结果
-- [ ] 能提供下一步操作指引
+- [x] 能正确获取运行中的实验（`kubectl get podchaos,networkchaos,stresschaos -n chaos-mesh`）
+- [x] 能成功中止实验（delete CRD，CRD 在 chaos-mesh namespace）
+- [x] 能验证资源清理完成（已验证：CRD 删除后 No resources found）
+- [x] 能显示中止结果
+- [x] 能提供下一步操作指引

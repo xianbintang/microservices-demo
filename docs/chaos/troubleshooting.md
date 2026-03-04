@@ -335,15 +335,15 @@ kubectl rollout restart deployment grafana -n monitoring
 1. 尝试删除实验 CRD
 
 ```bash
-kubectl delete podchaos <name> -n monitoring
-kubectl delete networkchaos <name> -n monitoring
-kubectl delete stresschaos <name> -n monitoring
+kubectl delete podchaos <name> -n chaos-mesh
+kubectl delete networkchaos <name> -n chaos-mesh
+kubectl delete stresschaos <name> -n chaos-mesh
 ```
 
 2. 强制删除卡住的资源
 
 ```bash
-kubectl delete podchaos <name> -n monitoring --force --grace-period=0
+kubectl delete podchaos <name> -n chaos-mesh --force --grace-period=0
 ```
 
 3. 重启 Chaos Mesh 控制器
@@ -474,13 +474,13 @@ kubectl rollout restart deployment grafana -n monitoring
 ### CLI 命令
 
 ```bash
-# 列出所有实验
-kubectl get podchaos -n monitoring
-kubectl get networkchaos -n monitoring
-kubectl get stresschaos -n monitoring
+# 列出所有实验（CRD 在 chaos-mesh namespace）
+kubectl get podchaos -n chaos-mesh
+kubectl get networkchaos -n chaos-mesh
+kubectl get stresschaos -n chaos-mesh
 
 # 查看实验详情
-kubectl describe podchaos <name> -n monitoring
+kubectl describe podchaos <name> -n chaos-mesh
 
 # 删除实验
 kubectl delete podchaos <name> -n monitoring
@@ -523,6 +523,128 @@ kubectl port-forward -n monitoring svc/chaos-dashboard 2333:2333
 5. 查看实验历史
    - 导航到 "Workflow" 或 "Experiment"
    - 查看历史实验列表
+
+---
+
+---
+
+## kind 本地集群特有故障排除
+
+### chaos-daemon gRPC 连接失败（StressChaos/NetworkChaos 卡在 Injecting）
+
+#### 问题
+StressChaos 或 NetworkChaos 创建后停留在 `Injecting` 状态，chaos-controller-manager 日志出现：
+```
+error reading server preface: EOF
+```
+或类似 gRPC 连接错误。
+
+#### 根本原因
+chaos-controller-manager deployment 缺少 mTLS 相关环境变量（`SECURITY_MODE`、证书路径等）。chaos-daemon 启动时需要 TLS（传入 `--ca`、`--cert`、`--key` 参数），控制器必须以 TLS 模式连接，否则 daemon 在 TLS 握手失败后立即关闭连接（EOF）。
+
+这通常发生在通过 `kubectl patch` 修改了控制器的 `env` 数组后，整个数组被覆盖导致安全相关变量丢失。
+
+#### 诊断
+
+```bash
+# 检查控制器当前环境变量
+kubectl get deployment -n monitoring chaos-controller-manager \
+  -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' | tr ' ' '\n' | sort
+
+# 必须包含以下变量
+# SECURITY_MODE
+# CHAOS_DAEMON_CLIENT_CERT
+# CHAOS_DAEMON_CLIENT_KEY
+# CHAOS_MESH_CA_CERT
+```
+
+#### 修复
+
+```bash
+# 如果缺少 SECURITY_MODE 等变量，通过 patch 添加
+kubectl patch deployment -n monitoring chaos-controller-manager --type='json' -p='[
+  {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"SECURITY_MODE","value":"true"}},
+  {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"CHAOS_DAEMON_CLIENT_CERT","value":"/etc/chaos-daemon/cert/tls.crt"}},
+  {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"CHAOS_DAEMON_CLIENT_KEY","value":"/etc/chaos-daemon/cert/tls.key"}},
+  {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"CHAOS_MESH_CA_CERT","value":"/etc/chaos-daemon/cert/ca.crt"}}
+]'
+
+# 等待控制器重启
+kubectl rollout status deployment -n monitoring chaos-controller-manager
+```
+
+---
+
+### NetworkChaos 延迟注入失败（unable to flush ip sets）
+
+#### 问题
+NetworkChaos 创建后状态为 `NotInjected`，chaos-daemon 日志出现：
+```
+unable to flush ip sets
+```
+
+#### 根本原因
+kind 集群的容器内核没有加载 `ip_set` 内核模块，ipset 命令不可用。这是 kind 环境的已知限制，无法通过配置解决。
+
+#### 替代方案
+
+1. **使用目标 Pod partition 模式**（已验证可用）：
+   ```yaml
+   spec:
+     action: partition
+     mode: one
+     selector:
+       namespaces: [online-boutique]
+       labelSelectors: {app: redis-cart}  # 隔离目标依赖
+     direction: both
+   ```
+
+2. **使用 PodChaos 替代**：对需要测试不可用场景的服务，直接 kill Pod 而不是注入延迟
+
+3. **在真实 Kubernetes 集群中测试**：网络延迟注入需要在支持 ipset 的内核环境下运行
+
+---
+
+### NetworkChaos 实验卡住无法删除（finalizer 阻塞）
+
+#### 问题
+`kubectl delete networkchaos <name> -n chaos-mesh` 命令挂起，资源无法删除。
+
+#### 根本原因
+NetworkChaos 在 `NotInjected` 状态下，控制器无法完成清理流程，finalizer 阻止资源被删除。
+
+#### 修复
+
+```bash
+# 强制移除 finalizer
+kubectl patch networkchaos <name> -n chaos-mesh --type=json \
+  -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+
+# 资源会立即被删除
+kubectl get networkchaos -n chaos-mesh
+```
+
+---
+
+### Helm upgrade 冲突（before-first-apply SSA 错误）
+
+#### 问题
+运行 `helm upgrade chaos-mesh` 时报错：
+```
+conflicts with "before-first-apply" using apps/v1
+```
+
+#### 根本原因
+通过 `kubectl patch` 手动修改了 Helm 管理的 Deployment 字段，导致 Server-Side Apply 字段管理者冲突。Helm 无法覆盖这些字段。
+
+#### 解决方案
+**不推荐使用 Helm upgrade 解决此问题**，会引入更多冲突风险。直接用 `kubectl patch` 维护所需字段：
+
+```bash
+# 推荐：直接 patch，绕过 Helm SSA 冲突
+kubectl patch deployment -n monitoring chaos-controller-manager \
+  --type='strategic-merge-patch' -p '{"spec":{"template":{"spec":{"containers":[{"name":"chaos-controller-manager","env":[...]}]}}}}'
+```
 
 ---
 

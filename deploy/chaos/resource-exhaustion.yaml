@@ -5,7 +5,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: resource-exhaustion-experiment
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: resource-exhaustion
     chaos.mes.org/namespace: online-boutique
@@ -32,7 +32,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: cpu-stress-experiment
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: cpu-stress
     chaos.mes.org/namespace: online-boutique
@@ -59,7 +59,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: memory-stress-experiment
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: memory-stress
     chaos.mes.org/namespace: online-boutique

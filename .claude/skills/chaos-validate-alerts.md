@@ -26,26 +26,26 @@
 目标服务: frontend
 
 预期告警:
-- PodNotReady (Critical)
-- ServiceUnavailable (Warning)
+- ChaosPodNotReady (Critical)
+- ChaosServiceDown (Critical)
 
 实际触发的告警:
-1. PodNotReady
+1. ChaosPodNotReady
    - 触发时间: 10:00:05 (故障后 5s)
    - 恢复时间: 10:01:00
    - 持续时长: 55s
    - 响应时间: 5s ✅ (≤30s)
    - 严重级别: Critical ✅
-   - 标签: namespace=online-boutique, service=frontend ✅
+   - 标签: namespace=online-boutique, pod=frontend-xxx ✅
 
 验证结果:
-✅ PodNotReady: 5s 内触发，符合预期
-❌ ServiceUnavailable: 未触发 (预期但未触发)
+✅ ChaosPodNotReady: 5s 内触发，符合预期
+❌ ChaosServiceDown: 未触发（单副本快速重建，不满足"无就绪 Pod"条件）
 
 告警响应时间分析:
 | 告警名称 | 预期响应时间 | 实际响应时间 | 评价 |
 |---------|-------------|-------------|------|
-| PodNotReady | ≤30s | 5s | ✅ 优秀 |
+| ChaosPodNotReady | ≤30s | 5s | ✅ 优秀 |
 
 覆盖率: 50% (1/2) ⚠️
 
@@ -65,9 +65,9 @@
 
 ## 验收标准
 
-- [ ] 能正确获取实验信息
-- [ ] 能查询实验期间的告警
-- [ ] 能准确对比预期和实际告警
-- [ ] 能计算告警响应时间
-- [ ] 能生成可读的验证报告
-- [ ] 能提供改进建议
+- [x] 能正确获取实验信息
+- [x] 能查询实验期间的告警（通过 Alertmanager API 查询 Chaos* 标签告警）
+- [x] 能准确对比预期和实际告警（已验证：ChaosPodNotReady 触发，ChaosServiceDown 未触发）
+- [x] 能计算告警响应时间
+- [x] 能生成可读的验证报告
+- [x] 能提供改进建议（指向代码路径 deploy/monitoring/alerting/）

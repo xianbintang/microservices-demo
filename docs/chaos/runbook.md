@@ -75,8 +75,8 @@
 - Pod 终止 → Kubernetes 重建 Pod → 服务恢复
 
 #### 预期告警
-- `PodNotReady` (Critical)
-- `ServiceUnavailable` (Warning)
+- `ChaosPodNotReady` (Critical)
+- `ChaosServiceDown` (Critical) - 仅在所有副本均不可用时触发
 
 #### 执行步骤
 
@@ -153,8 +153,8 @@ kubectl apply -f deploy/chaos/pod-failure.yaml
 - 延迟注入 → 超时/重试/熔断 → 移除延迟 → 恢复
 
 #### 预期告警
-- `HighLatency` (Warning)
-- `High5xxRate` (Critical)
+- `ChaosHighLatency` (Warning) - P95 延迟 > 2s
+- `ChaosHighErrorRate` (Critical) - 错误率 > 10%
 
 #### 执行步骤
 
@@ -216,9 +216,10 @@ kubectl apply -f deploy/chaos/network-latency.yaml
 - 服务不可用 → 降级/熔断 → 恢复服务 → 流量恢复
 
 #### 预期告警
-- `ServiceUnavailable` (Critical)
-- `DependencyErrorRateHigh` (Warning)
-- `CircuitBreakerOpen` (Warning)
+- `ChaosHighErrorRate` (Critical) - 上游服务错误率 > 10%
+- `ChaosPodRestart` (Warning) - 依赖不可用导致 Pod 重启
+
+注意：Online Boutique 未实现熔断器，CircuitBreakerOpen 告警不会触发。
 
 #### 执行步骤
 
@@ -281,10 +282,10 @@ kubectl apply -f deploy/chaos/dependency-failure.yaml
 - CPU/内存压力 → 节流/OOM → 移除压力 → 恢复
 
 #### 预期告警
-- `HighCPUUsage` (Warning)
-- `HighMemoryUsage` (Warning)
-- `PodOOMKilled` (Critical)
-- `CPUThrottlingHigh` (Warning)
+- `ChaosHighCPUUsage` (Warning) - CPU > 0.5 cores 持续 1m
+- `ChaosHighMemoryUsage` (Warning) - 内存 > 400MiB 持续 1m
+- `ChaosOOMKilled` (Critical) - 容器被 OOM 终止
+- `ChaosCPUThrottling` (Warning) - CPU 节流 > 50% 持续 1m
 
 #### 执行步骤
 
@@ -348,10 +349,10 @@ kubectl apply -f deploy/chaos/resource-exhaustion.yaml
 - 多个故障 → 隔离/熔断 → 移除故障 → 逐层恢复
 
 #### 预期告警
-- `CascadeFailureDetected` (Critical)
-- `ServiceUnavailable` (Critical)
-- `SystemDegraded` (Warning)
-- `CircuitBreakerCascade` (Warning)
+- `ChaosPodNotReady` (Critical) - adservice 被 kill
+- `ChaosServiceDown` (Critical) - adservice 所有副本不可用
+- `ChaosHighMemoryUsage` (Warning) - checkoutservice 内存压力
+- `ChaosHighLatency` (Warning) - 若 NetworkChaos 注入成功
 
 #### 执行步骤
 
@@ -446,10 +447,10 @@ kubectl apply -f deploy/chaos/cascade-failure.yaml
 # 使用 Claude Code skill 中止实验
 /chaos-abort [experiment-id]
 
-# 或手动删除实验 CRD
-kubectl delete podchaos <name> -n monitoring
-kubectl delete networkchaos <name> -n monitoring
-kubectl delete stresschaos <name> -n monitoring
+# 或手动删除实验 CRD（注意：CRD 在 chaos-mesh namespace）
+kubectl delete podchaos <name> -n chaos-mesh
+kubectl delete networkchaos <name> -n chaos-mesh
+kubectl delete stresschaos <name> -n chaos-mesh
 ```
 
 ---
@@ -459,10 +460,10 @@ kubectl delete stresschaos <name> -n monitoring
 实验完成后，确保所有资源已正确清理：
 
 ```bash
-# 检查运行中的实验
-kubectl get podchaos -n monitoring
-kubectl get networkchaos -n monitoring
-kubectl get stresschaos -n monitoring
+# 检查运行中的实验（CRD 在 chaos-mesh namespace）
+kubectl get podchaos -n chaos-mesh
+kubectl get networkchaos -n chaos-mesh
+kubectl get stresschaos -n chaos-mesh
 
 # 确认无残留资源
 kubectl get all -n online-boutique
@@ -470,6 +471,50 @@ kubectl get all -n online-boutique
 # 检查 Pod 状态
 kubectl get pods -n online-boutique
 ```
+
+---
+
+## kind 本地环境已知限制
+
+本节记录在 kind 本地集群（Mac ARM64 + podman）中运行混沌实验的已知限制和解决方案。
+
+### NetworkChaos 延迟注入（源 Pod 模式）不可用
+
+**现象**: 对 `recommendationservice`、`adservice` 等源 Pod 注入延迟时，chaos-daemon 报错 `unable to flush ip sets`，实验状态为 `NotInjected`。
+
+**根因**: kind 容器内核不加载 `ip_set` 模块，ipset 命令不可用。
+
+**替代方案**:
+- 使用 `action: partition` + `direction: both` 对**目标 Pod**做网络隔离（已验证：redis-cart target partition 成功）
+- 对 `cartservice` 测试 Redis 依赖故障时，指定 `app: redis-cart` 为目标
+
+**已验证可用的实验类型**:
+- PodChaos (pod-kill): ✅ 完全可用
+- StressChaos (cpu/memory stress): ✅ 完全可用（需 SECURITY_MODE=true）
+- NetworkChaos (partition, target pod): ✅ 可用
+- NetworkChaos (delay, source pod): ❌ 不可用（ipset 限制）
+
+### StressChaos 需要 SECURITY_MODE 环境变量
+
+**现象**: StressChaos 创建后卡在 `Injecting` 状态，chaos-controller-manager 日志出现 `error reading server preface: EOF`。
+
+**根因**: chaos-controller-manager deployment 的 `SECURITY_MODE` 等 mTLS 环境变量丢失，控制器用非 TLS 方式连接要求 TLS 的 chaos-daemon。
+
+**排查命令**:
+```bash
+kubectl get deployment -n monitoring chaos-controller-manager -o json | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); envs={e['name'] for c in d['spec']['template']['spec']['containers'] for e in c.get('env',[])}; print(envs)"
+```
+
+**修复**: 确认 `SECURITY_MODE`, `CHAOS_DAEMON_CLIENT_CERT`, `CHAOS_DAEMON_CLIENT_KEY`, `CHAOS_MESH_CA_CERT` 等环境变量存在，详见 [故障排除指南](./troubleshooting.md)。
+
+### Helm upgrade SSA 冲突
+
+**现象**: `helm upgrade chaos-mesh` 失败，报 `conflicts with "before-first-apply" using apps/v1`。
+
+**根因**: 通过 `kubectl patch` 修改过的字段引入了与 Helm SSA（Server-Side Apply）不兼容的字段管理者冲突。
+
+**解决方案**: 使用 `kubectl patch` 直接修改 deployment，不通过 Helm 修改，详见 [故障排除指南](./troubleshooting.md)。
 
 ---
 

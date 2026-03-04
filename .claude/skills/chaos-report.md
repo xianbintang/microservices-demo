@@ -21,17 +21,17 @@
 ```
 混沌实验报告
 ============
-实验 ID: pod-failure-20240101-100000
-报告生成时间: 2024-01-01 10:05:00
+实验 ID: pod-failure-frontend-20260301-100000
+报告生成时间: 2026-03-01 10:05:00
 
 实验信息:
 - 实验类型: Pod 故障
 - 目标服务: frontend
 - 故障类型: PodKill
 - 实验时长: 2m
-- 开始时间: 2024-01-01 10:00:00
-- 结束时间: 2024-01-01 10:02:00
-- 预期告警: PodNotReady, ServiceUnavailable
+- 开始时间: 2026-03-01 10:00:00
+- 结束时间: 2026-03-01 10:02:00
+- 预期告警: ChaosPodNotReady, ChaosServiceDown
 
 观察数据:
 Pod 状态:
@@ -54,8 +54,8 @@ Service 状态:
 - 平均响应时间: 120ms
 
 告警验证结果:
-✅ PodNotReady: 5s 内触发，响应时间优秀
-❌ ServiceUnavailable: 未触发
+✅ ChaosPodNotReady: 5s 内触发，响应时间优秀
+❌ ChaosServiceDown: 未触发（需多副本同时不可用才触发）
 覆盖率: 50% (1/2)
 
 自我恢复验证结果:
@@ -66,11 +66,11 @@ Service 状态:
 评价: 通过
 
 问题识别:
-1. ServiceUnavailable 告警未触发
+1. ChaosServiceDown 告警未触发（单副本被 kill 后重建，不满足"无就绪 Pod"条件）
 
 改进建议:
-1. 检查 ServiceUnavailable 告警规则
-2. 或调整预期告警列表
+1. 调整预期告警列表：单 Pod 故障场景只预期 ChaosPodNotReady
+2. 或在 values 中增加副本数（>1）再验证 ChaosServiceDown
 
 Runbook 更新:
 - ✅ Pod 故障恢复时间: 45s
@@ -91,10 +91,10 @@ Runbook 更新:
 
 ## 验收标准
 
-- [ ] 能正确获取实验信息
-- [ ] 能整合所有观察数据
-- [ ] 能包含告警验证结果
-- [ ] 能包含自我恢复验证结果
-- [ ] 能生成可读的完整报告
-- [ ] 能提供改进建议
-- [ ] 能更新 Runbook
+- [x] 能正确获取实验信息（实验类型、目标服务、时长、开始/结束时间）
+- [x] 能整合所有观察数据（Pod 状态、Service 状态、性能指标）
+- [x] 能包含告警验证结果（实际告警名称使用 Chaos* 前缀）
+- [x] 能包含自我恢复验证结果
+- [x] 能生成可读的完整报告
+- [x] 能提供改进建议（指向具体代码路径）
+- [x] 能更新 Runbook

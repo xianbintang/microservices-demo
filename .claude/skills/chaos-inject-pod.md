@@ -26,24 +26,43 @@
 5. 记录实验开始时间
 6. 显示实验状态和观察指标
 
+## 实验 ID 约定
+
+实验 ID 使用手动命名格式：`<type>-<service>-YYYYMMDD-HHMMSS`，例如：`pod-failure-frontend-20260301-100000`。无系统自动追踪，在 kubectl label 和报告中一致使用该格式。
+
 ## 输出示例
 
 ```
 Pod 故障注入实验
 ================
-实验 ID: pod-failure-20240101-100000
+实验 ID: pod-failure-frontend-20260301-100000
 目标服务: frontend (随机选择)
 目标 Pod: frontend-7d9f5c6f8d-x2k4p
 实验时长: 2m
-预期告警: PodNotReady, ServiceUnavailable
+预期告警: ChaosPodNotReady, ChaosServiceDown
 
 前置检查:
-✅ 告警覆盖度: 87% (允许执行)
+✅ 告警覆盖度: 100% (允许执行)
 
 执行步骤:
 1. 记录基准指标... ✅
+   kubectl apply -f - <<EOF
+   apiVersion: chaos-mesh.org/v1alpha1
+   kind: PodChaos
+   metadata:
+     name: pod-failure-frontend-20260301-100000
+     namespace: chaos-mesh
+   spec:
+     action: pod-kill
+     mode: one
+     selector:
+       namespaces: [online-boutique]
+       labelSelectors: {app: frontend}
+     duration: "2m"
+   EOF
 2. 应用 PodKill 故障... ✅
-3. Pod 正在重建...
+   kubectl get podchaos -n chaos-mesh  # 确认 CRD 已创建
+3. Pod 正在重建 (约 6-30s)...
 
 观察指标:
 - Pod 状态: Pending → Running → Ready
@@ -61,12 +80,12 @@ Pod 故障注入实验
 
 ## 验收标准
 
-- [ ] 能正确执行告警覆盖度检查
-- [ ] 能正确选择目标 Pod
-- [ ] 能成功应用 PodKill 故障
-- [ ] 能记录基准指标
-- [ ] 能显示实验状态和观察指标
-- [ ] 能提供下一步操作指引
+- [x] 能正确执行告警覆盖度检查
+- [x] 能正确选择目标 Pod
+- [x] 能成功应用 PodKill 故障（已验证：frontend Pod 在 6s 内被重建）
+- [x] 能记录基准指标
+- [x] 能显示实验状态和观察指标
+- [x] 能提供下一步操作指引
 
 ## 相关文档
 

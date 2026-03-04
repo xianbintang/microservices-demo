@@ -6,7 +6,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
   name: cascade-pod-failure-adservice
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: cascade-failure
     chaos.mes.org/namespace: online-boutique
@@ -31,7 +31,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
   name: cascade-network-latency-recommendation
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: cascade-failure
     chaos.mes.org/namespace: online-boutique
@@ -60,7 +60,7 @@ apiVersion: chaos-mesh.org/v1alpha1
 kind: StressChaos
 metadata:
   name: cascade-memory-stress-checkout
-  namespace: online-boutique
+  namespace: chaos-mesh
   labels:
     chaos.mes.org/type: cascade-failure
     chaos.mes.org/namespace: online-boutique
