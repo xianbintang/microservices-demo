@@ -42,27 +42,65 @@ make -f Makefile.kind create-registry create-cluster
 - 配置 containerd mirror：`us-central1-docker.pkg.dev` → `kind-registry:5000`（本地透明代理）
 - 将 kind-registry 加入 containerd NO_PROXY（避免被系统代理劫持）
 
-### 3. 准备镜像（arch-aware）
+### 3. 准备镜像（三级优先级，优先复用本地缓存）
+
+**执行前必须先做 registry 预检**，按优先级选择最快路径：
+
+#### 3a. 检查 registry 当前状态
+
+```bash
+curl -s --noproxy localhost http://localhost:5001/v2/_catalog | \
+  python3 -c "import json,sys; repos=json.load(sys.stdin)['repositories']; print(f'Registry: {len(repos)}/14 images'); [print(' ✅', r.split('/')[-1]) for r in sorted(repos)]"
+```
+
+所需 14 个镜像：`adservice` `cartservice` `checkoutservice` `currencyservice` `emailservice` `frontend` `loadgenerator` `paymentservice` `productcatalogservice` `recommendationservice` `shippingservice` `busybox` `redis` `opentelemetry-collector-contrib`
+
+#### 3b. 按优先级选择路径
+
+**路径 A — 全部就绪（跳过此步骤）：** Registry 已有 14 个镜像 → 直接进入步骤 4，无需任何操作。
+
+**路径 B — 部分缺失（从本地 podman 补推，秒级完成，无需网络）：**
+
+先用以下脚本找出缺失镜像并从本地 podman 推送：
+
+```bash
+REGISTRY_REPOS=$(curl -s --noproxy localhost http://localhost:5001/v2/_catalog | \
+  python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)['repositories']))")
+
+for img in adservice cartservice checkoutservice currencyservice emailservice \
+           frontend loadgenerator paymentservice productcatalogservice \
+           recommendationservice shippingservice; do
+  if ! echo "$REGISTRY_REPOS" | grep -q "$img"; then
+    echo "→ 推送 $img (from local podman)"
+    podman push --tls-verify=false \
+      "localhost:5001/google-samples/microservices-demo/${img}:v0.10.4" 2>&1 | tail -1
+  fi
+done
+
+for img_tag in "busybox:latest" "redis:alpine" "opentelemetry-collector-contrib:0.144.0"; do
+  img="${img_tag%%:*}"
+  if ! echo "$REGISTRY_REPOS" | grep -q "$img"; then
+    echo "→ 推送 $img (from local podman)"
+    podman push --tls-verify=false \
+      "localhost:5001/google-samples/microservices-demo/${img_tag}" 2>&1 | tail -1
+  fi
+done
+```
+
+若 podman 中也没有某个镜像（`podman push` 报 `image not known`），则该镜像进入路径 C。
+
+**路径 C — 本地无缓存（从网络拉取或构建，耗时）：**
 
 ```bash
 make -f Makefile.kind prepare-images
 ```
 
-**自动根据主机架构分发：**
+| 主机架构 | 执行路径 | 耗时估算 |
+|---------|---------|---------|
+| `arm64` (Mac M系列) | 从 `src/` 构建原生 arm64 镜像 | 20–40 分钟（首次）|
+| `amd64` (Intel Mac) | 从 Google registry 拉取 amd64 镜像 | 5–15 分钟 |
 
-| 主机架构 | 执行路径 | 说明 |
-|---------|---------|------|
-| `arm64` (Mac M系列) | `build-images` | 从 `src/` 构建原生 arm64 镜像 |
-| `amd64` (x86 Linux/Mac) | `pull-images` | 从 Google public registry 拉取预构建 amd64 镜像 |
-
-**arm64 特殊说明：**
-- 10 个应用服务从源码构建（Go/Node.js/Python/Java 均支持 arm64）
-- `cartservice`（.NET）除外：Grpc.Tools 2.76.0 的 `linux_arm64/protoc` 有 SIGSEGV bug，保留 amd64（I/O 密集型，Rosetta 开销可接受）
-- `redis`, `busybox`, `otel-collector-contrib` 从公共 registry 拉取原生 arm64 版本
-
-**首次耗时估算：**
-- arm64 构建模式：20-40 分钟（编译所有服务）
-- amd64 拉取模式：5-15 分钟（取决于网络）
+**arm64 说明：** cartservice 保留 amd64（Grpc.Tools 2.76.0 arm64 protoc 有 SIGSEGV bug）；redis/busybox/otelcol 拉取公共多架构镜像。
 
 ### 4. 部署可观测性栈
 
@@ -73,6 +111,29 @@ make -f Makefile.kind deploy-monitoring
 部署：kube-prometheus-stack → Loki → Tempo → Promtail（均使用公共多架构镜像，containerd 自动选对应架构）
 
 ### 5. 部署 Online Boutique 微服务
+
+**执行前必须先检查 helm release 状态**，清理因中断留下的锁：
+
+```bash
+HELM_STATUS=$(helm status online-boutique -n online-boutique -o json 2>/dev/null | \
+  python3 -c "import json,sys; print(json.load(sys.stdin).get('info',{}).get('status','not-found'))" 2>/dev/null || echo "not-found")
+echo "Helm release status: $HELM_STATUS"
+```
+
+| 状态 | 处理方式 |
+|------|---------|
+| `not-found` | 直接安装，无需清理 |
+| `deployed` | 直接 upgrade，无需清理 |
+| `pending-install` / `pending-upgrade` | **必须先执行** `helm uninstall online-boutique -n online-boutique`，再安装 |
+| `failed` | 执行 `helm uninstall online-boutique -n online-boutique`，再安装 |
+
+清理命令（仅当状态为 pending-* 或 failed 时执行）：
+
+```bash
+helm uninstall online-boutique -n online-boutique
+```
+
+然后执行：
 
 ```bash
 make -f Makefile.kind deploy-app
@@ -140,6 +201,8 @@ make -f Makefile.kind deploy-remote REGISTRY=my.registry.io CONTEXT=my-arm64-clu
 
 | 症状 | 排查步骤 |
 |------|---------|
+| `another operation in progress` (helm) | 执行步骤 5 的 helm status 检查，`helm uninstall online-boutique -n online-boutique` 清锁后重试 |
+| Registry 空（重建后镜像丢失） | 先检查 `podman images \| grep localhost:5001`，有则用步骤 3b 脚本批量推送；全无则运行 `make -f Makefile.kind prepare-images` |
 | `ImagePullBackOff` | 检查 `make pull-images` / `build-images` 是否成功；`docker network inspect kind` 确认 kind-registry 在 kind 网络中 |
 | `CrashLoopBackOff` | `kubectl logs -n online-boutique <pod>` 查看日志 |
 | Grafana 无数据 | 等 2-3 分钟让 spanmetrics 开始生成；检查 `kubectl get pods -n monitoring` 全部 Running |
