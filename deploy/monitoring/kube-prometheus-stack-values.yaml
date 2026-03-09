@@ -205,11 +205,11 @@ grafana:
   # 资源配置
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
       cpu: 500m
       memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
 
   # 预配置数据源
   additionalDataSources:
