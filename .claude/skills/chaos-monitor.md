@@ -1,97 +1,117 @@
-# 混沌实验监控 skill
+---
+description: 监控正在运行的混沌实验，显示实验状态、Pod 健康、实时错误率和告警。用法：/chaos-monitor [experiment-name]
+---
 
-监控正在运行的混沌实验，显示实时状态和关键指标。
+# 混沌实验监控
 
-## 核心原则
-
-**告警规则必须代码固化** - 所有告警规则必须存储在代码仓库中（`deploy/monitoring/alerting/`），禁止使用临时 `kubectl apply` 命令创建告警规则。
+实时显示运行中实验的状态、目标服务 Pod 健康、Prometheus 错误率/延迟、已触发告警。
 
 ## 用法
 
 ```
-/chaos-monitor [name]
+/chaos-monitor [experiment-name]
 ```
 
 ### 参数
 
-- `name`: 可选，指定实验名称（如 `pod-failure-experiment`，默认：显示所有运行中实验）
+- `experiment-name`: 可选，指定实验名称过滤（默认：显示所有运行中实验）
 
 ## 执行步骤
 
-1. 查询所有运行中的 Chaos Mesh CRD：
-   ```bash
-   kubectl get podchaos,networkchaos,stresschaos --all-namespaces
-   ```
+### 步骤 1：检查 Chaos Mesh 安装状态
 
-2. 查询目标服务当前 Pod 状态：
-   ```bash
-   kubectl get pods -n online-boutique -l app=<service>
-   ```
+```bash
+kubectl get crd podchaos.chaos-mesh.org 2>/dev/null \
+  && echo "Chaos Mesh 已安装" \
+  || echo "Chaos Mesh 未安装 — 无运行中实验"
+```
 
-3. 查询实时错误率（Prometheus）：
-   ```promql
-   rate(traces_spanmetrics_calls_total{service_name="<service>",status_code!="STATUS_CODE_OK"}[1m])
-   / rate(traces_spanmetrics_calls_total{service_name="<service>"}[1m])
-   ```
+若 Chaos Mesh 未安装，直接输出"无运行中实验"后结束。
 
-4. 查询 P95 延迟（Prometheus）：
-   ```promql
-   histogram_quantile(0.95, rate(traces_spanmetrics_duration_milliseconds_bucket{service_name="<service>"}[1m]))
-   ```
+### 步骤 2：查询运行中的实验
 
-5. 查询当前触发的 Chaos 告警（Alertmanager）：
-   ```bash
-   kubectl exec -n monitoring alertmanager-kube-prometheus-stack-alertmanager-0 -- \
-     wget -qO- 'http://localhost:9093/api/v2/alerts?filter=chaos_test%3D%22true%22'
-   ```
+```bash
+kubectl get podchaos,networkchaos,stresschaos --all-namespaces 2>/dev/null \
+  || echo "No chaos experiments running"
+```
 
-## 输出示例
+### 步骤 3：查询目标服务 Pod 状态
 
-**有实验运行时：**
+根据步骤 2 中实验的 `selector.labelSelectors.app` 确定目标服务，执行：
+
+```bash
+kubectl get pods -n online-boutique -l app=<target-service> \
+  --no-headers | awk '{print $1, $2, $3, $5}'
+```
+
+### 步骤 4：查询实时指标（Prometheus）
+
+```bash
+kubectl exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -- \
+  wget -qO- "http://localhost:9090/api/v1/query?query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('sum by (service_name) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[1m])) / sum by (service_name) (rate(traces_spanmetrics_calls_total[1m])) * 100'))")" | \
+  python3 -c "
+import json,sys
+data=json.load(sys.stdin)['data']['result']
+print('错误率 (1m):')
+for r in sorted(data, key=lambda x: float(x['value'][1] or 0), reverse=True)[:5]:
+    svc=r['metric'].get('service_name','?')
+    val=float(r['value'][1] or 0)
+    flag='⚠️' if val>1 else ''
+    print(f'  {svc}: {val:.2f}% {flag}')
+" 2>/dev/null || echo "  (Prometheus 未就绪)"
+```
+
+### 步骤 5：查询已触发的 Chaos 告警
+
+```bash
+kubectl exec -n monitoring alertmanager-kube-prometheus-stack-alertmanager-0 -- \
+  wget -qO- 'http://localhost:9093/api/v2/alerts?filter=chaos_test%3D%22true%22' | \
+  python3 -c "
+import json,sys
+alerts=json.load(sys.stdin)
+if not alerts:
+    print('  告警: 无 Chaos 告警触发')
+else:
+    print(f'  告警: {len(alerts)} 条 Chaos 告警')
+    for a in alerts:
+        name=a['labels'].get('alertname','?')
+        state=a['status']['state']
+        sev=a['labels'].get('severity','?')
+        print(f'    [{sev.upper()}] {name} [{state}]')
+" 2>/dev/null
+```
+
+### 步骤 6：输出汇总
+
+整合以上数据，格式：
+
 ```
 混沌实验监控
 ============
-运行中的实验: 1
+Chaos Mesh: 已安装 / 未安装
 
-实验: pod-failure-experiment (online-boutique)
--------------------------------------
-类型: PodChaos - pod-kill
-目标服务: frontend
-状态: Running
+运行中实验: N 个
+  <实验名> (类型 / 目标 / 状态)
 
-实时指标:
-Pod 状态: 0/1 Ready ⚠️
-错误率: 3.2% (基准: ~0%) ⚠️
-P95 延迟: 180ms (基准: ~80ms)
+Pod 状态:
+  <service>: N/N Ready
 
-触发告警:
-⚡ ChaosPodNotReady (30s 前)
-⚡ ChaosPodRestart (45s 前)
+实时指标 (1m):
+  错误率: X%
+  告警: X 条
 
-Grafana: http://localhost:3000 (在线 boutique 大盘)
-
-下一步:
-- 使用 /chaos-validate-alerts 验证告警触发
-- 使用 /chaos-validate-self-heal 验证自我恢复
-- 使用 /chaos-abort 中止实验
+访问地址:
+  Grafana: http://localhost:3000
 ```
 
-**无实验运行时：**
-```
-混沌实验监控
-============
-运行中的实验: 0
+## 核心原则
 
-kubectl get podchaos,networkchaos,stresschaos --all-namespaces
-→ No resources found
-
-状态: 无运行中实验，可以发起新实验
-```
+**告警规则必须代码固化** — 所有告警规则必须存储在 `deploy/monitoring/alerting/`。
 
 ## 验收标准
 
-- [x] 能正确查询运行中的实验（`--all-namespaces`）
-- [x] 能获取实时关键指标（Pod 状态、错误率、P95 延迟）
-- [x] 能显示告警状态（通过 Alertmanager API）
-- [x] 能在无实验时输出"无运行中实验"而非报错
-- [x] 能提供下一步操作指引
+- [x] Chaos Mesh 未安装时优雅输出"无运行中实验"，不报错
+- [x] 正确查询所有类型实验（PodChaos/NetworkChaos/StressChaos）
+- [x] 显示目标 Pod 实时状态
+- [x] 显示 Prometheus 错误率（使用 spanmetrics）
+- [x] 显示 Alertmanager 中 Chaos 告警

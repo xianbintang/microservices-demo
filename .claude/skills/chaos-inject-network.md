@@ -1,10 +1,10 @@
-# 网络延迟注入 skill
+---
+description: 向目标服务注入网络故障（partition 隔离），kind 环境下使用目标 Pod 模式绕过 ipset 限制。用法：/chaos-inject-network [service] [latency] [duration]
+---
 
-触发网络延迟注入实验，向指定服务注入网络延迟。
+# 网络故障注入
 
-## 核心原则
-
-**告警规则必须代码固化** - 所有告警规则必须存储在代码仓库中（`deploy/monitoring/alerting/`），禁止使用临时 `kubectl apply` 命令创建告警规则。
+通过 NetworkChaos 注入网络隔离或延迟。kind 环境下源 Pod 延迟注入受 ipset 限制，自动使用 `partition` 模式隔离目标 Pod。
 
 ## 用法
 
@@ -14,94 +14,115 @@
 
 ### 参数
 
-- `service`: 目标服务名称（如 `recommendationservice`）
-- `latency`: 可选，延迟量（默认：500ms），格式：数字+ms/s
-- `duration`: 可选，实验时长（默认：3m），格式：数字+s/m/h
+- `service`: 目标服务（如 `recommendationservice`），或 `redis-cart` 测试依赖隔离
+- `latency`: 可选，延迟量（默认：500ms）——**kind 环境下无效，自动转为 partition 模式**
+- `duration`: 可选，实验时长（默认：3m）
 
 ## kind 环境已知限制
 
-**重要**: 在 kind 本地集群中，NetworkChaos 存在以下限制：
+| 模式 | 效果 |
+|------|------|
+| 源 Pod delay（`action: delay`）| ❌ 失败：chaos-daemon 报 `unable to flush ip sets` |
+| 目标 Pod partition（`action: partition`）| ✅ 成功：已验证 redis-cart 隔离可触发 cartservice 错误率上升 |
 
-- **源 Pod 注入失败**：对 `recommendationservice`、`adservice` 等源 Pod 注入延迟时，chaos-daemon 会报 `unable to flush ip sets`（ipset 内核模块限制），实验进入 `NotInjected` 状态
-- **目标 Pod partition 可用**：使用 `action: partition` + `direction: both` 对**被访问方**（如 `redis-cart`）做网络隔离可以成功注入（已验证）
-- **替代验证方法**：对 `cartservice` 测试依赖故障时，指定 `app: redis-cart` 为目标，使用 partition 模式隔离 Redis，可触发 cartservice 错误率上升
+在 kind 以外的生产 Kubernetes 集群上，`action: delay` 可正常注入。
 
-如果需要测试延迟注入，建议在真实 Kubernetes 集群（非 kind）中执行，或改用 Pod 故障实验替代。
+## 执行步骤
 
-## 实验 ID 约定
+### 步骤 1：检查 Chaos Mesh 安装
 
-实验 ID 使用手动命名格式：`<type>-<service>-YYYYMMDD-HHMMSS`，例如：`network-latency-recommendationservice-20260301-100000`。无系统自动追踪，在 kubectl label 和报告中一致使用该格式。
-
-## 执行流程
-
-1. 运行告警覆盖度检查
-2. 检查目标服务是否存在
-3. 检查 kind 环境限制（如适用）
-4. 记录基准指标（P95 延迟、错误率）
-5. 应用 NetworkChaos 故障
-6. 记录实验开始时间
-7. 显示实验状态和观察指标
-
-## 输出示例
-
+```bash
+kubectl get crd networkchaos.chaos-mesh.org 2>/dev/null \
+  && echo "✅ Chaos Mesh 已安装" \
+  || { echo "❌ Chaos Mesh 未安装。安装命令："; \
+       echo "helm repo add chaos-mesh https://charts.chaos-mesh.org"; \
+       echo "helm install chaos-mesh chaos-mesh/chaos-mesh -n chaos-mesh --create-namespace --set chaosDaemon.runtime=containerd --set chaosDaemon.socketPath=/run/containerd/containerd.sock"; \
+       exit 1; }
 ```
-网络延迟注入实验
-================
-实验 ID: network-latency-redis-cart-20260301-100000
-目标服务: redis-cart (partition 模式)
-延迟量: N/A (partition 模式)
-实验时长: 3m
-预期告警: ChaosHighErrorRate, ChaosPodRestart
 
-前置检查:
-✅ 告警覆盖度: 100% (允许执行)
-⚠️  kind 环境: 源 Pod 延迟注入不可用，使用 target partition 模式
+### 步骤 2：运行告警覆盖度检查
 
-执行步骤:
-1. 记录基准指标... ✅
-   - P95 延迟: 8ms
-   - 错误率: 0%
-2. 应用 NetworkChaos 故障... ✅
-   kubectl apply -f - <<EOF
-   apiVersion: chaos-mesh.org/v1alpha1
-   kind: NetworkChaos
-   metadata:
-     name: network-latency-redis-cart-20260301-100000
-     namespace: chaos-mesh
-   spec:
-     action: partition
-     mode: one
-     selector:
-       namespaces: [online-boutique]
-       labelSelectors: {app: redis-cart}
-     direction: both
-     duration: "3m"
-   EOF
-3. 网络隔离已注入...
+执行 `/chaos-check-alerts`，覆盖率 ≥ 80% 才继续。
 
-观察指标:
-- Pod 状态: redis-cart Running, cartservice 请求失败
-- 错误率: 监控中
-- 告警触发: 等待中...
+### 步骤 3：检测 kind 环境
 
-下一步:
-- 使用 /chaos-monitor 监控实验状态
-- 使用 /chaos-validate-alerts 验证告警触发
-- 使用 /chaos-validate-self-heal 验证自我恢复
-- 使用 /chaos-report 生成实验报告
-- 使用 /chaos-abort 中止实验
+```bash
+kubectl get node -o jsonpath='{.items[0].metadata.name}' | grep -q "kind" \
+  && echo "⚠️  kind 环境: 自动切换为 partition 模式（目标 Pod 隔离）" \
+  || echo "✅ 非 kind 环境: 可使用 delay 模式"
 ```
+
+### 步骤 4：记录基准指标
+
+```bash
+kubectl exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -- \
+  wget -qO- "http://localhost:9090/api/v1/query?query=histogram_quantile(0.95%2Csum+by+(service_name%2Cle)(rate(traces_spanmetrics_duration_milliseconds_bucket%5B2m%5D)))" | \
+  python3 -c "import json,sys; r=json.load(sys.stdin)['data']['result']; print('基准 P95 延迟:'); [print(f'  {x[\"metric\"].get(\"service_name\",\"?\")}: {float(x[\"value\"][1]):.0f} ms') for x in sorted(r,key=lambda x:float(x['value'][1]),reverse=True)[:5]]" 2>/dev/null
+```
+
+### 步骤 5：注入故障
+
+**kind 环境（partition 模式）：**
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-partition-<service>-<timestamp>
+  namespace: chaos-mesh
+spec:
+  action: partition
+  mode: one
+  selector:
+    namespaces: [online-boutique]
+    labelSelectors:
+      app: <service>
+  direction: both
+  duration: "<duration>"
+EOF
+```
+
+**非 kind 环境（delay 模式）：**
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-<service>-<timestamp>
+  namespace: chaos-mesh
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces: [online-boutique]
+    labelSelectors:
+      app: <service>
+  delay:
+    latency: "<latency>"
+    correlation: "100"
+    jitter: "0ms"
+  duration: "<duration>"
+EOF
+```
+
+### 步骤 6：确认注入状态
+
+```bash
+kubectl get networkchaos -n chaos-mesh \
+  -o custom-columns="NAME:.metadata.name,PHASE:.status.experiment.desiredPhase"
+```
+
+期望状态：`Injected`（partition 模式）。
+
+## 核心原则
+
+**告警规则必须代码固化** — 所有告警规则存储于 `deploy/monitoring/alerting/chaos-testing-alerts.yaml`。
 
 ## 验收标准
 
-- [x] 能正确执行告警覆盖度检查
-- [x] 能检测并报告 kind 环境的 ipset 限制（源 Pod 注入失败时明确提示）
-- [x] 能使用目标 Pod partition 模式作为替代验证方法（已验证：redis-cart partition 成功 Injected）
-- [x] 能记录基准指标
-- [x] 能显示实验状态和观察指标
-- [x] 能提供下一步操作指引
-
-## 相关文档
-
-- [混沌实验运行手册](../../docs/chaos/runbook.md)
-- [故障排除指南](../../docs/chaos/troubleshooting.md)
+- [x] Chaos Mesh 未安装时明确提示安装命令
+- [x] kind 环境自动检测并切换 partition 模式
+- [x] 注入前记录基准 P95 延迟
+- [x] 创建 NetworkChaos CRD 并确认 Injected 状态

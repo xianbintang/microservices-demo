@@ -1,10 +1,10 @@
-# 告警验证 skill
+---
+description: 验证混沌实验期间 Chaos 告警是否正确触发，通过 Alertmanager API 查询实际触发告警并与预期对比。用法：/chaos-validate-alerts [experiment-id]
+---
 
-验证混沌实验期间告警是否正确触发，生成告警验证报告。
+# 告警验证
 
-## 核心原则
-
-**告警规则必须代码固化** - 所有告警规则必须存储在代码仓库中（`deploy/monitoring/alerting/`），禁止使用临时 `kubectl apply` 命令创建告警规则。告警验证报告中的改进建议应明确指向需要修改的代码文件路径。
+查询 Alertmanager 中 `chaos_test="true"` 标签的告警，对比实验预期告警清单，生成告警验证报告。
 
 ## 用法
 
@@ -14,60 +14,89 @@
 
 ### 参数
 
-- `experiment-id`: 可选，指定实验 ID（默认：验证最近完成的实验）
+- `experiment-id`: 可选，用于报告标题（默认：显示最近实验）
 
-## 输出示例
+## 执行步骤
 
+### 步骤 1：查询当前触发的 Chaos 告警
+
+```bash
+kubectl exec -n monitoring alertmanager-kube-prometheus-stack-alertmanager-0 -- \
+  wget -qO- 'http://localhost:9093/api/v2/alerts?filter=chaos_test%3D%22true%22' | \
+  python3 -c "
+import json, sys
+alerts = json.load(sys.stdin)
+print(f'Chaos 告警数量: {len(alerts)}')
+for a in alerts:
+    name     = a['labels'].get('alertname', '?')
+    state    = a['status']['state']
+    sev      = a['labels'].get('severity', '?').upper()
+    ns       = a['labels'].get('namespace', a['labels'].get('pod', '?'))
+    started  = a.get('startsAt', '?')[:19]
+    print(f'  [{sev}] {name} [{state}] — {ns} (since {started})')
+"
+```
+
+### 步骤 2：查询 Prometheus 中 Chaos 告警历史
+
+```bash
+kubectl exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -- \
+  wget -qO- 'http://localhost:9090/api/v1/alerts' | \
+  python3 -c "
+import json, sys
+data = json.load(sys.stdin)['data']['alerts']
+chaos = [a for a in data if a['labels'].get('alertname','').startswith('Chaos')]
+print(f'Prometheus 中 Chaos 告警: {len(chaos)} 条')
+for a in chaos:
+    name  = a['labels']['alertname']
+    state = a['state']
+    sev   = a['labels'].get('severity','?')
+    print(f'  [{sev}] {name} [{state}]')
+"
+```
+
+### 步骤 3：对比预期告警
+
+根据实验类型，预期告警如下（从注入 skill 的输出中获取）：
+
+| 实验类型 | 预期告警 |
+|---------|---------|
+| Pod 故障 | ChaosPodNotReady, (ChaosPodDown 多副本时) |
+| 网络隔离 | ChaosHighErrorRate, ChaosPodRestart |
+| 资源耗尽 CPU | ChaosHighCPUUsage, ChaosCPUThrottling |
+| 资源耗尽内存 | ChaosHighMemoryUsage, (ChaosOOMKilled 超限时) |
+| 级联故障 | ChaosPodNotReady + ChaosHighMemoryUsage 组合 |
+
+### 步骤 4：生成验证报告
+
+输出格式：
 ```
 告警验证报告
 ============
-实验 ID: pod-failure-20240101-100000
-实验类型: Pod 故障
-目标服务: frontend
+实验 ID: <id>
 
-预期告警:
-- ChaosPodNotReady (Critical)
-- ChaosServiceDown (Critical)
-
-实际触发的告警:
-1. ChaosPodNotReady
-   - 触发时间: 10:00:05 (故障后 5s)
-   - 恢复时间: 10:01:00
-   - 持续时长: 55s
-   - 响应时间: 5s ✅ (≤30s)
-   - 严重级别: Critical ✅
-   - 标签: namespace=online-boutique, pod=frontend-xxx ✅
+触发的 Chaos 告警:
+  [CRITICAL] ChaosPodNotReady [firing] — online-boutique/frontend-xxx (since 2026-03-09T...)
 
 验证结果:
-✅ ChaosPodNotReady: 5s 内触发，符合预期
-❌ ChaosServiceDown: 未触发（单副本快速重建，不满足"无就绪 Pod"条件）
+  ✅ ChaosPodNotReady: 已触发
+  ❌ ChaosServiceDown: 未触发（单副本重建速度快，未满足"无就绪 Pod"条件）
 
-告警响应时间分析:
-| 告警名称 | 预期响应时间 | 实际响应时间 | 评价 |
-|---------|-------------|-------------|------|
-| ChaosPodNotReady | ≤30s | 5s | ✅ 优秀 |
-
-覆盖率: 50% (1/2) ⚠️
-
-问题识别:
-❌ ServiceUnavailable 告警未触发，可能是:
-   - 告警规则缺失
-   - 告警阈值不合理
-   - 服务未完全不可用
+覆盖率: 1/2 (50%) ⚠️
 
 改进建议:
-1. 检查 ServiceUnavailable 告警规则是否存在
-2. 考虑调整告警阈值（如可用副本数 < 2 时触发）
-3. 或从预期告警列表中移除（如果服务有多副本）
-
-整体评价: 部分 ⚠️
+  - 单副本 Pod Kill 实验移除 ChaosServiceDown 预期（需多副本同时不可用）
+  - 或将 Deployment replicas 设为 2 以验证 ServiceDown 场景
+  代码路径: helm-chart/templates/ 或 deploy/kind/values-kind.yaml
 ```
+
+## 核心原则
+
+**告警规则必须代码固化** — 改进建议必须指向具体文件：`deploy/monitoring/alerting/chaos-testing-alerts.yaml`。
 
 ## 验收标准
 
-- [x] 能正确获取实验信息
-- [x] 能查询实验期间的告警（通过 Alertmanager API 查询 Chaos* 标签告警）
-- [x] 能准确对比预期和实际告警（已验证：ChaosPodNotReady 触发，ChaosServiceDown 未触发）
-- [x] 能计算告警响应时间
-- [x] 能生成可读的验证报告
-- [x] 能提供改进建议（指向代码路径 deploy/monitoring/alerting/）
+- [x] 使用 Alertmanager API 查询 `chaos_test="true"` 标签的告警（不依赖 Chaos Mesh）
+- [x] 使用 Prometheus API 补充查询告警历史
+- [x] 对比预期告警清单，给出 ✅/❌ 结论
+- [x] 计算覆盖率并给出改进建议（指向代码路径）
