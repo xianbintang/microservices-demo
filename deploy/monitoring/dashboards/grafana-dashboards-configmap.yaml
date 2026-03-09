@@ -329,6 +329,46 @@ data:
           "datasource": {"type": "prometheus", "uid": "prometheus"},
           "fieldConfig": {
             "defaults": {
+              "color": {"mode": "fixed", "fixedColor": "red"},
+              "custom": {
+                "fillOpacity": 80,
+                "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+                "lineWidth": 0,
+                "spanNulls": false
+              },
+              "mappings": [
+                {"options": {"0": {"color": "green", "index": 0, "text": "inactive"}, "1": {"color": "red", "index": 1, "text": "firing"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 1},
+          "id": 20,
+          "options": {
+            "alignValue": "left",
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+            "mergeValues": true,
+            "rowHeight": 0.9,
+            "showValue": "auto",
+            "tooltip": {"mode": "single", "sort": "none"}
+          },
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "prometheus"},
+              "expr": "ALERTS{alertname=~\"Chaos.*\"} == 1",
+              "legendFormat": "{{alertname}} [{{severity}}] {{pod}}{{label_app}}{{service_name}}",
+              "refId": "A"
+            }
+          ],
+          "title": "历史告警时间线 (时间窗口内)",
+          "type": "state-timeline"
+        },
+    
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
               "color": {"fixedColor": "red", "mode": "fixed"},
               "mappings": [{"options": {"0": {"color": "green", "index": 0, "text": "0"}}, "type": "value"}],
               "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]},
@@ -336,7 +376,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 1},
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 9},
           "id": 1,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
           "targets": [
@@ -362,7 +402,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 1},
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 9},
           "id": 2,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
           "targets": [
@@ -388,7 +428,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 1},
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 9},
           "id": 3,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
           "targets": [
@@ -443,7 +483,7 @@ data:
               }
             ]
           },
-          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 5},
+          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 13},
           "id": 4,
           "options": {
             "cellHeight": "sm",
@@ -475,7 +515,7 @@ data:
     
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20},
           "id": 101,
           "title": "Pod 健康状态",
           "type": "row"
@@ -495,7 +535,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
           "id": 5,
           "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
           "targets": [
@@ -522,7 +562,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
           "id": 6,
           "options": {"legend": {"calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
           "targets": [
@@ -549,7 +589,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 29},
           "id": 7,
           "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
           "targets": [
@@ -576,7 +616,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 29},
           "id": 8,
           "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
           "targets": [
@@ -593,7 +633,7 @@ data:
     
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 37},
           "id": 102,
           "title": "性能影响",
           "type": "row"
@@ -611,7 +651,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 30},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 38},
           "id": 9,
           "options": {"legend": {"calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -638,7 +678,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 30},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 38},
           "id": 10,
           "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -661,7 +701,7 @@ data:
     
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 38},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 46},
           "id": 103,
           "title": "资源压力",
           "type": "row"
@@ -679,7 +719,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 39},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 47},
           "id": 11,
           "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -706,7 +746,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 39},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 47},
           "id": 12,
           "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -733,7 +773,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 39},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 47},
           "id": 13,
           "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -750,3 +790,4 @@ data:
     
       ]
     }
+    
