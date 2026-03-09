@@ -156,10 +156,22 @@ make -f Makefile.kind port-forward
 make -f Makefile.kind status
 ```
 
-### 8. 输出访问地址
+### 8. 配置 mcp-grafana
+
+执行 `/mcp-grafana-setup` skill 配置 Grafana MCP 服务器：
+
+1. 创建 Grafana Service Account `mcp-grafana`（Admin 角色）
+2. 生成 Service Account Token
+3. 写入 `.mcp.json` 配置文件
+4. 确保 `.mcp.json` 已加入 `.gitignore`
+
+**注意：** 此步骤需要 Claude 用户确认后执行。若用户跳过，可稍后手动运行 `/mcp-grafana-setup`。
+
+### 9. 输出访问地址
 
 - Frontend: http://localhost:8080
 - Grafana:  http://localhost:3000（admin / admin）
+- mcp-grafana: 已配置（重启 Claude Code 后生效）
 
 ---
 

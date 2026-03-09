@@ -176,20 +176,21 @@ data:
       "uid": "alerting-overview",
       "version": 1
     }
+---
 # -----------------------------------------------------------
-# Dashboard 3: 混沌实验监控大盘
+# Dashboard 3: 实验状态监控大盘
 # -----------------------------------------------------------
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-dashboard-chaos-experiments
+  name: grafana-dashboard-app-experiments
   namespace: monitoring
   labels:
     grafana_dashboard: "1"
 data:
-  chaos-experiments.json: |
+  app-experiments.json: |
     {
-      "description": "混沌实验监控大盘 - Chaos Mesh 实验监控",
+      "description": "实验状态监控大盘",
       "editable": true,
       "graphTooltip": 0,
       "id": null,
@@ -217,15 +218,16 @@ data:
       ],
       "refresh": "30s",
       "schemaVersion": 39,
-      "tags": ["chaos","chaos-mesh","experiments"],
+      "tags": ["experiments","monitoring"],
       "templating": {"list": []},
       "time": {"from": "now-1h","to": "now"},
       "timepicker": {},
       "timezone": "",
-      "title": "混沌实验监控",
-      "uid": "chaos-experiments",
+      "title": "实验状态监控",
+      "uid": "app-experiments",
       "version": 1
     }
+---
 # -----------------------------------------------------------
 # Dashboard 4: 告警验证大盘
 # -----------------------------------------------------------
@@ -239,7 +241,7 @@ metadata:
 data:
   alert-validation.json: |
     {
-      "description": "告警验证大盘 - 验证混沌实验期间告警触发情况",
+      "description": "告警验证大盘 - 验证告警触发情况",
       "editable": true,
       "graphTooltip": 0,
       "id": null,
@@ -263,7 +265,7 @@ data:
       ],
       "refresh": "30s",
       "schemaVersion": 39,
-      "tags": ["chaos","alerts","validation"],
+      "tags": ["alerts","validation"],
       "templating": {"list": []},
       "time": {"from": "now-1h","to": "now"},
       "timepicker": {},
@@ -275,17 +277,17 @@ data:
 
 ---
 # -----------------------------------------------------------
-# Dashboard 3: Chaos Testing 告警监控大盘
+# Dashboard 3: 应用告警监控大盘
 # -----------------------------------------------------------
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-dashboard-chaos-testing
+  name: grafana-dashboard-app-monitoring
   namespace: monitoring
   labels:
     grafana_dashboard: "1"
 data:
-  chaos-testing.json: |
+  app-monitoring.json: |
     {
       "annotations": {
         "list": [
@@ -300,7 +302,7 @@ data:
           }
         ]
       },
-      "description": "Chaos Testing 告警监控大盘 — 实时展示 Pod 健康、告警触发、性能影响与资源压力",
+      "description": "应用告警监控大盘 — 实时展示 Pod 健康、告警触发、性能影响与资源压力",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -308,12 +310,12 @@ data:
       "links": [],
       "refresh": "10s",
       "schemaVersion": 38,
-      "tags": ["chaos", "testing", "sre"],
+      "tags": ["monitoring", "sre"],
       "time": {"from": "now-1h", "to": "now"},
       "timepicker": {},
       "timezone": "browser",
-      "title": "Chaos Testing Dashboard",
-      "uid": "chaos-testing-v1",
+      "title": "应用告警监控",
+      "uid": "app-monitoring-v1",
       "version": 1,
       "panels": [
     
@@ -356,7 +358,7 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "prometheus"},
-              "expr": "ALERTS{alertname=~\"Chaos.*\"} == 1",
+              "expr": "ALERTS{alertname=~\"App.*\"} == 1",
               "legendFormat": "{{alertname}} [{{severity}}] {{pod}}{{label_app}}{{service_name}}",
               "refId": "A"
             }
@@ -382,7 +384,7 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "prometheus"},
-              "expr": "count(ALERTS{alertname=~\"Chaos.*\", severity=\"critical\", alertstate=\"firing\"}) or vector(0)",
+              "expr": "count(ALERTS{alertname=~\"App.*\", severity=\"critical\", alertstate=\"firing\"}) or vector(0)",
               "instant": true,
               "refId": "A"
             }
@@ -408,7 +410,7 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "prometheus"},
-              "expr": "count(ALERTS{alertname=~\"Chaos.*\", severity=\"warning\", alertstate=\"firing\"}) or vector(0)",
+              "expr": "count(ALERTS{alertname=~\"App.*\", severity=\"warning\", alertstate=\"firing\"}) or vector(0)",
               "instant": true,
               "refId": "A"
             }
@@ -434,7 +436,7 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "prometheus"},
-              "expr": "count(ALERTS{alertname=~\"Chaos.*\", alertstate=\"firing\"}) or vector(0)",
+              "expr": "count(ALERTS{alertname=~\"App.*\", alertstate=\"firing\"}) or vector(0)",
               "instant": true,
               "refId": "A"
             }
@@ -494,18 +496,18 @@ data:
           "targets": [
             {
               "datasource": {"type": "prometheus", "uid": "prometheus"},
-              "expr": "ALERTS{alertname=~\"Chaos.*\", alertstate=\"firing\"}",
+              "expr": "ALERTS{alertname=~\"App.*\", alertstate=\"firing\"}",
               "format": "table",
               "instant": true,
               "refId": "A"
             }
           ],
-          "title": "活跃 Chaos 告警详情",
+          "title": "活跃告警详情",
           "transformations": [
             {
               "id": "organize",
               "options": {
-                "excludeByName": {"Time": true, "__name__": true, "alertstate": true, "chaos_test": true, "job": true, "prometheus": true, "prometheus_replica": true, "condition": true},
+                "excludeByName": {"Time": true, "__name__": true, "alertstate": true, "job": true, "prometheus": true, "prometheus_replica": true, "condition": true},
                 "renameByName": {}
               }
             }
@@ -662,7 +664,7 @@ data:
               "refId": "A"
             }
           ],
-          "title": "服务错误率 (ChaosHighErrorRate 阈值: 10%)",
+          "title": "服务错误率 (阈值: 10%)",
           "type": "timeseries"
         },
     
@@ -695,7 +697,7 @@ data:
               "refId": "B"
             }
           ],
-          "title": "P95/P99 延迟 (ChaosHighLatency 阈值: 2000ms)",
+          "title": "P95/P99 延迟 (阈值: 2000ms)",
           "type": "timeseries"
         },
     
@@ -730,7 +732,7 @@ data:
               "refId": "A"
             }
           ],
-          "title": "CPU 使用率 (ChaosHighCPUUsage 阈值: 0.5 core)",
+          "title": "CPU 使用率 (阈值: 0.5 core)",
           "type": "timeseries"
         },
     
@@ -757,7 +759,7 @@ data:
               "refId": "A"
             }
           ],
-          "title": "CPU 节流率 (ChaosCPUThrottling 阈值: 50%)",
+          "title": "CPU 节流率 (阈值: 50%)",
           "type": "timeseries"
         },
     
@@ -784,7 +786,7 @@ data:
               "refId": "A"
             }
           ],
-          "title": "内存使用 (ChaosHighMemoryUsage 阈值: 400MiB)",
+          "title": "内存使用 (阈值: 400MiB)",
           "type": "timeseries"
         }
     

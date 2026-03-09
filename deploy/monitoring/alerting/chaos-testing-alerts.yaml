@@ -1,7 +1,7 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: chaos-testing-alerts
+  name: app-monitoring-alerts
   namespace: monitoring
   labels:
     prometheus: kube-prometheus-stack
@@ -10,74 +10,63 @@ metadata:
     release: kube-prometheus-stack
 spec:
   groups:
-    - name: chaos.pod.alerts
+    - name: app.pod.alerts
       interval: 30s
       rules:
-        # Pod Restart Count - 混沌工程测试专用 (30 秒)
-        - alert: ChaosPodRestart
+        - alert: AppPodRestart
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted in last 5m (chaos test).'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted in last 5m.'
             summary: Pod restarted.
           expr: |
             increase(kube_pod_container_status_restarts_total{namespace=~"online-boutique"}[5m]) > 0
           for: 30s
           labels:
             severity: warning
-            chaos_test: "true"
 
-        # Pod Not Ready - 混沌工程测试专用
-        - alert: ChaosPodNotReady
+        - alert: AppPodNotReady
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready (chaos test).'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready.'
             summary: Pod not ready.
           expr: |
             kube_pod_status_ready{namespace="online-boutique", condition="true"} == 0
           for: 30s
           labels:
             severity: critical
-            chaos_test: "true"
 
-        # Pod Down / Failed - 混沌工程测试专用
-        - alert: ChaosPodDown
+        - alert: AppPodDown
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is in Failed/Unknown phase (chaos test).'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is in Failed/Unknown phase.'
             summary: Pod down.
           expr: |
             kube_pod_status_phase{namespace="online-boutique", phase=~"Failed|Unknown"} > 0
           for: 30s
           labels:
             severity: critical
-            chaos_test: "true"
 
-        # CrashLoopBackOff - 混沌工程测试专用
-        - alert: ChaosPodCrashLoopBackOff
+        - alert: AppPodCrashLoopBackOff
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff (chaos test).'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff.'
             summary: Pod in CrashLoopBackOff.
           expr: |
             kube_pod_container_status_waiting_reason{namespace="online-boutique", reason="CrashLoopBackOff"} == 1
           for: 30s
           labels:
             severity: critical
-            chaos_test: "true"
 
-        # OOMKilled - 混沌工程测试专用
-        - alert: ChaosOOMKilled
+        - alert: AppOOMKilled
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled (chaos test).'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled.'
             summary: Pod OOM killed.
           expr: |
             kube_pod_container_status_last_terminated_reason{namespace="online-boutique", reason="OOMKilled"} == 1
           for: 0s
           labels:
             severity: critical
-            chaos_test: "true"
 
-        # Service Down (no pods ready) - 混沌工程测试专用
         # 修复: 按 label_app 聚合，join kube_pod_labels 获取 app 标签，避免每 Pod 单独触发
-        - alert: ChaosServiceDown
+        - alert: AppServiceDown
           annotations:
-            description: 'All pods for app {{ $labels.label_app }} in namespace {{ $labels.namespace }} are not ready (chaos test).'
+            description: 'All pods for app {{ $labels.label_app }} in namespace {{ $labels.namespace }} are not ready.'
             summary: Service has no ready pods.
           expr: |
             (
@@ -90,27 +79,23 @@ spec:
           for: 30s
           labels:
             severity: critical
-            chaos_test: "true"
 
-    - name: chaos.latency.alerts
+    - name: app.latency.alerts
       interval: 30s
       rules:
-        # High Latency Detected - 混沌工程测试专用
-        - alert: ChaosHighLatency
+        - alert: AppHighLatency
           annotations:
-            description: '服务 {{ $labels.service_name }} P95 延迟过高: {{ $value }}ms (chaos test)'
+            description: '服务 {{ $labels.service_name }} P95 延迟过高: {{ $value }}ms'
             summary: High latency detected.
           expr: |
-            histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".*"}[5m])) by (le, service_name)) > 2000
+            histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".*"}[5m])) by (le, service_name)) > 100
           for: 30s
           labels:
             severity: warning
-            chaos_test: "true"
 
-        # High Error Rate Detected - 混沌工程测试专用
-        - alert: ChaosHighErrorRate
+        - alert: AppHighErrorRate
           annotations:
-            description: '服务 {{ $labels.service_name }} 错误率过高: {{ $value | humanizePercentage }} (chaos test)'
+            description: '服务 {{ $labels.service_name }} 错误率过高: {{ $value | humanizePercentage }}'
             summary: High error rate detected.
           expr: |
             (sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[5m])) by (service_name)
@@ -119,15 +104,13 @@ spec:
           for: 30s
           labels:
             severity: critical
-            chaos_test: "true"
 
-    - name: chaos.resource.alerts
+    - name: app.resource.alerts
       interval: 30s
       rules:
-        # CPU Throttling High - 混沌工程测试专用
-        - alert: ChaosCPUThrottling
+        - alert: AppCPUThrottling
           annotations:
-            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU throttling rate > 50% (chaos test).'
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU throttling rate > 50%.'
             summary: High CPU throttling detected.
           expr: |
             (
@@ -138,12 +121,10 @@ spec:
           for: 30s
           labels:
             severity: warning
-            chaos_test: "true"
 
-        # High CPU Usage - 混沌工程测试专用 (绝对值 > 0.5 core)
-        - alert: ChaosHighCPUUsage
+        - alert: AppHighCPUUsage
           annotations:
-            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU usage > 0.5 core (chaos test).'
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU usage > 0.5 core.'
             summary: High CPU usage detected.
           expr: |
             sum by (namespace, pod, container) (
@@ -152,12 +133,10 @@ spec:
           for: 30s
           labels:
             severity: warning
-            chaos_test: "true"
 
-        # High Memory Usage - 混沌工程测试专用 (绝对值 > 400MiB)
-        - alert: ChaosHighMemoryUsage
+        - alert: AppHighMemoryUsage
           annotations:
-            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} memory working set > 400MiB (chaos test).'
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} memory working set > 400MiB.'
             summary: High memory usage detected.
           expr: |
             sum by (namespace, pod, container) (
@@ -166,4 +145,3 @@ spec:
           for: 30s
           labels:
             severity: warning
-            chaos_test: "true"

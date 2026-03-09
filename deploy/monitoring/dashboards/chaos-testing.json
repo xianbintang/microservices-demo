@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Chaos Testing 告警监控大盘 — 实时展示 Pod 健康、告警触发、性能影响与资源压力",
+  "description": "应用告警监控大盘 — 实时展示 Pod 健康、告警触发、性能影响与资源压力",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -20,12 +20,12 @@
   "links": [],
   "refresh": "10s",
   "schemaVersion": 38,
-  "tags": ["chaos", "testing", "sre"],
+  "tags": ["monitoring", "sre"],
   "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
-  "title": "Chaos Testing Dashboard",
-  "uid": "chaos-testing-v1",
+  "title": "应用告警监控",
+  "uid": "app-monitoring-v1",
   "version": 1,
   "panels": [
 
@@ -68,7 +68,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "ALERTS{alertname=~\"Chaos.*\"} == 1",
+          "expr": "ALERTS{alertname=~\"App.*\"} == 1",
           "legendFormat": "{{alertname}} [{{severity}}] {{pod}}{{label_app}}{{service_name}}",
           "refId": "A"
         }
@@ -94,7 +94,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "count(ALERTS{alertname=~\"Chaos.*\", severity=\"critical\", alertstate=\"firing\"}) or vector(0)",
+          "expr": "count(ALERTS{alertname=~\"App.*\", severity=\"critical\", alertstate=\"firing\"}) or vector(0)",
           "instant": true,
           "refId": "A"
         }
@@ -120,7 +120,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "count(ALERTS{alertname=~\"Chaos.*\", severity=\"warning\", alertstate=\"firing\"}) or vector(0)",
+          "expr": "count(ALERTS{alertname=~\"App.*\", severity=\"warning\", alertstate=\"firing\"}) or vector(0)",
           "instant": true,
           "refId": "A"
         }
@@ -146,7 +146,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "count(ALERTS{alertname=~\"Chaos.*\", alertstate=\"firing\"}) or vector(0)",
+          "expr": "count(ALERTS{alertname=~\"App.*\", alertstate=\"firing\"}) or vector(0)",
           "instant": true,
           "refId": "A"
         }
@@ -206,18 +206,18 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "ALERTS{alertname=~\"Chaos.*\", alertstate=\"firing\"}",
+          "expr": "ALERTS{alertname=~\"App.*\", alertstate=\"firing\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         }
       ],
-      "title": "活跃 Chaos 告警详情",
+      "title": "活跃告警详情",
       "transformations": [
         {
           "id": "organize",
           "options": {
-            "excludeByName": {"Time": true, "__name__": true, "alertstate": true, "chaos_test": true, "job": true, "prometheus": true, "prometheus_replica": true, "condition": true},
+            "excludeByName": {"Time": true, "__name__": true, "alertstate": true, "job": true, "prometheus": true, "prometheus_replica": true, "condition": true},
             "renameByName": {}
           }
         }
@@ -374,7 +374,7 @@
           "refId": "A"
         }
       ],
-      "title": "服务错误率 (ChaosHighErrorRate 阈值: 10%)",
+      "title": "服务错误率 (阈值: 10%)",
       "type": "timeseries"
     },
 
@@ -407,7 +407,7 @@
           "refId": "B"
         }
       ],
-      "title": "P95/P99 延迟 (ChaosHighLatency 阈值: 2000ms)",
+      "title": "P95/P99 延迟 (阈值: 2000ms)",
       "type": "timeseries"
     },
 
@@ -442,7 +442,7 @@
           "refId": "A"
         }
       ],
-      "title": "CPU 使用率 (ChaosHighCPUUsage 阈值: 0.5 core)",
+      "title": "CPU 使用率 (阈值: 0.5 core)",
       "type": "timeseries"
     },
 
@@ -469,7 +469,7 @@
           "refId": "A"
         }
       ],
-      "title": "CPU 节流率 (ChaosCPUThrottling 阈值: 50%)",
+      "title": "CPU 节流率 (阈值: 50%)",
       "type": "timeseries"
     },
 
@@ -496,7 +496,7 @@
           "refId": "A"
         }
       ],
-      "title": "内存使用 (ChaosHighMemoryUsage 阈值: 400MiB)",
+      "title": "内存使用 (阈值: 400MiB)",
       "type": "timeseries"
     }
 
