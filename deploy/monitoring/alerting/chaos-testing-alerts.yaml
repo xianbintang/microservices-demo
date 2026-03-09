@@ -74,14 +74,18 @@ spec:
             chaos_test: "true"
 
         # Service Down (no pods ready) - 混沌工程测试专用
-        # 修复: 原规则使用了不存在的 kube_service_status_available_replicas，改用 kube_pod_status_ready
+        # 修复: 按 label_app 聚合，join kube_pod_labels 获取 app 标签，避免每 Pod 单独触发
         - alert: ChaosServiceDown
           annotations:
-            description: 'All pods for a service in namespace {{ $labels.namespace }} are not ready (chaos test).'
+            description: 'All pods for app {{ $labels.label_app }} in namespace {{ $labels.namespace }} are not ready (chaos test).'
             summary: Service has no ready pods.
           expr: |
             (
-              sum by (namespace, pod) (kube_pod_status_ready{namespace="online-boutique", condition="true"})
+              sum by (namespace, label_app) (
+                kube_pod_status_ready{namespace="online-boutique", condition="true"}
+                * on(namespace, pod) group_left(label_app)
+                kube_pod_labels{namespace="online-boutique"}
+              )
             ) == 0
           for: 30s
           labels:

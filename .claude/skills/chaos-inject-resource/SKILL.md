@@ -1,5 +1,13 @@
 ---
+name: chaos-inject-resource
 description: 向目标服务注入 CPU 或内存资源压力（StressChaos），触发资源告警。用法：/chaos-inject-resource [service] [type] [value] [duration]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 资源耗尽注入

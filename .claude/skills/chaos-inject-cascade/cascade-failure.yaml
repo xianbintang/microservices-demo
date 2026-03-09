@@ -26,11 +26,11 @@ spec:
   duration: "2m"
 
 ---
-# 故障 2: recommendationservice 网络延迟
+# 故障 2: recommendationservice 网络隔离（partition 模式，兼容 kind ipset 限制）
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
-  name: cascade-network-latency-recommendation
+  name: cascade-network-partition-recommendation
   namespace: chaos-mesh
   labels:
     chaos.mes.org/type: cascade-failure
@@ -38,20 +38,17 @@ metadata:
     chaos.mes.org/cascade-id: "default"
     chaos.mes.org/fault-order: "2"
   annotations:
-    chaos.mes.org/description: "Cascade failure - recommendationservice network delay"
+    chaos.mes.org/description: "Cascade failure - recommendationservice network partition"
     chaos.mes.org/observability: "enable"
 spec:
-  action: delay
+  action: partition
   mode: one
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
       app: recommendationservice
-  delay:
-    latency: "500ms"
-    jitter: "50ms"
-  direction: to
+  direction: both
   duration: "3m"
 
 ---
@@ -83,8 +80,8 @@ spec:
 
 ---
 # 级联故障摘要 (用于文档和报告)
-# 实验包含 3 个同时或按顺序触发的故障:
+# 实验包含 3 个同时触发的故障:
 # 1. adservice: PodKill (2m)
-# 2. recommendationservice: NetworkDelay 500ms (3m)
-# 3. checkoutservice: MemoryStress 80% (4m)
-# 预期告警: ServiceUnavailable, CascadeFailureDetected, SystemDegraded, CircuitBreakerCascade
+# 2. recommendationservice: NetworkPartition (3m) — partition 兼容 kind
+# 3. checkoutservice: MemoryStress 512MiB (4m)
+# 预期告警: ChaosPodNotReady, ChaosHighMemoryUsage

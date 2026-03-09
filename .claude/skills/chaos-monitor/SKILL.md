@@ -1,5 +1,13 @@
 ---
+name: chaos-monitor
 description: 监控正在运行的混沌实验，显示实验状态、Pod 健康、实时错误率和告警。用法：/chaos-monitor [experiment-name]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 混沌实验监控

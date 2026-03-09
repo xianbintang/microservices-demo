@@ -1,5 +1,13 @@
 ---
+name: chaos-check-alerts
 description: 检查 Chaos 告警覆盖度，验证 11 条关键 Chaos* 告警规则在 Prometheus 中均已加载且状态 ok。混沌实验前置门控。用法：/chaos-check-alerts
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 告警覆盖度检查

@@ -1,5 +1,13 @@
 ---
+name: chaos-inject-pod
 description: 向指定服务注入 Pod 故障（PodKill），触发 Pod 重建，验证告警覆盖度后执行。用法：/chaos-inject-pod [service] [duration]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # Pod 故障注入

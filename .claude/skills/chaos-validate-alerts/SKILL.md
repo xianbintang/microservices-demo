@@ -1,5 +1,13 @@
 ---
+name: chaos-validate-alerts
 description: 验证混沌实验期间 Chaos 告警是否正确触发，通过 Alertmanager API 查询实际触发告警并与预期对比。用法：/chaos-validate-alerts [experiment-id]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 告警验证

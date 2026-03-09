@@ -1,5 +1,13 @@
 ---
+name: chaos-inject-dependency
 description: 模拟服务依赖不可用，通过 NetworkChaos partition 隔离依赖服务（如 redis-cart），触发上游服务错误率上升。用法：/chaos-inject-dependency [service] [dependency] [duration]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 依赖故障注入

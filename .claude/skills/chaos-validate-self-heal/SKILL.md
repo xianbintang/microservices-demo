@@ -1,5 +1,13 @@
 ---
+name: chaos-validate-self-heal
 description: 验证混沌实验后系统自我恢复能力，检查 Pod 状态、错误率、延迟是否恢复基准，生成自我恢复验证报告。用法：/chaos-validate-self-heal [service]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 自我恢复验证

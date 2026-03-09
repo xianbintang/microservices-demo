@@ -1,5 +1,13 @@
 ---
+name: chaos-inject-cascade
 description: 同时注入多个故障（PodKill + NetworkPartition + StressChaos），验证级联故障场景下的告警和恢复能力。用法：/chaos-inject-cascade [config]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 级联故障注入
@@ -14,19 +22,17 @@ description: 同时注入多个故障（PodKill + NetworkPartition + StressChaos
 
 ### 参数
 
-- `config`: 配置名（默认：`default`），对应 `deploy/chaos/cascade-failure.yaml`
+- `config`: 配置名（默认：`default`），对应 `.claude/skills/chaos-inject-cascade/cascade-failure.yaml`
 
 ## 默认配置（`default`）
 
-`deploy/chaos/cascade-failure.yaml` 包含 3 个同时触发的故障：
+`.claude/skills/chaos-inject-cascade/cascade-failure.yaml` 包含 3 个同时触发的故障：
 
 | # | 服务 | 故障类型 | 时长 | kind 支持 |
 |---|------|---------|------|----------|
 | 1 | adservice | PodChaos pod-kill | 2m | ✅ |
-| 2 | recommendationservice | NetworkChaos delay 500ms | 3m | ⚠️ 需改为 partition |
+| 2 | recommendationservice | NetworkChaos partition | 3m | ✅ |
 | 3 | checkoutservice | StressChaos memory 512MiB | 4m | ✅ |
-
-**kind 环境注意**：故障 2 NetworkChaos delay 在 kind 下失败（ipset 限制），自动跳过或改为 partition，实验整体仍有效。
 
 ## 执行步骤
 
@@ -58,13 +64,7 @@ kubectl exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -- \
 ### 步骤 4：应用级联故障配置
 
 ```bash
-# 检查 kind 环境，如需调整 NetworkChaos action
-IS_KIND=$(kubectl get node -o jsonpath='{.items[0].metadata.name}' | grep -c kind || true)
-if [ "$IS_KIND" -gt 0 ]; then
-  echo "⚠️  kind 环境: NetworkChaos delay → 改为 partition 模式"
-fi
-
-kubectl apply -f deploy/chaos/cascade-failure.yaml
+kubectl apply -f .claude/skills/chaos-inject-cascade/cascade-failure.yaml
 ```
 
 ### 步骤 5：确认各故障注入状态
@@ -78,7 +78,7 @@ echo "=== StressChaos ===" && kubectl get stresschaos -n chaos-mesh \
   -o custom-columns="NAME:.metadata.name,PHASE:.status.experiment.desiredPhase" 2>/dev/null || echo "  (无)"
 ```
 
-期望：PodChaos `Injected`，StressChaos `Injected`（NetworkChaos 在 kind 下可能 `NotInjected`）。
+期望：PodChaos `Injected`，NetworkChaos `Injected`，StressChaos `Injected`。
 
 ### 步骤 6：输出实验信息
 
@@ -86,14 +86,14 @@ echo "=== StressChaos ===" && kubectl get stresschaos -n chaos-mesh \
 级联故障注入实验
 ================
 实验 ID: cascade-default-<timestamp>
-配置: default (deploy/chaos/cascade-failure.yaml)
-故障数量: 3 (实际注入: 2–3 个)
+配置: default (.claude/skills/chaos-inject-cascade/cascade-failure.yaml)
+故障数量: 3
 最长时长: 4m
 
 各故障状态:
-  cascade-pod-failure-adservice:    Injected ✅
-  cascade-network-delay-recommend:  NotInjected ⚠️ (kind ipset)
-  cascade-memory-stress-checkout:   Injected ✅
+  cascade-pod-failure-adservice:          Injected ✅
+  cascade-network-partition-recommend:    Injected ✅
+  cascade-memory-stress-checkout:         Injected ✅
 
 预期告警:
   ChaosPodNotReady (adservice)
@@ -112,7 +112,6 @@ echo "=== StressChaos ===" && kubectl get stresschaos -n chaos-mesh \
 ## 验收标准
 
 - [x] Chaos Mesh 未安装时明确提示安装命令
-- [x] kind 环境自动检测并提示 NetworkChaos 限制
-- [x] 应用 `deploy/chaos/cascade-failure.yaml` 配置文件
+- [x] 应用 `.claude/skills/chaos-inject-cascade/cascade-failure.yaml` 配置文件
 - [x] 分类显示各 CRD 注入状态
 - [x] 提供下一步操作指引

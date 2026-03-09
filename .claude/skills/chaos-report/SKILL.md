@@ -1,5 +1,13 @@
 ---
+name: chaos-report
 description: 生成完整混沌实验报告，整合 Pod 状态、Prometheus 指标、Alertmanager 告警、自我恢复数据，输出结构化 Markdown 报告。用法：/chaos-report [experiment-id]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 生成实验报告

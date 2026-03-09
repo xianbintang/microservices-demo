@@ -1,5 +1,13 @@
 ---
+name: chaos-abort
 description: 中止正在运行的混沌实验，立即删除所有 Chaos CRD 并验证资源清理完成。用法：/chaos-abort [experiment-id]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 中止混沌实验

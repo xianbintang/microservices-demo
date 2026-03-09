@@ -1,5 +1,6 @@
 # Dependency Failure Experiment Template
 # 测试服务依赖故障时的系统弹性和降级能力
+# 通过隔离依赖服务（redis-cart）使上游（cartservice）无法访问依赖
 
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
@@ -10,7 +11,7 @@ metadata:
     chaos.mes.org/type: dependency-failure
     chaos.mes.org/namespace: online-boutique
   annotations:
-    chaos.mes.org/description: "Dependency failure experiment - isolates a service to simulate dependency unavailability"
+    chaos.mes.org/description: "Dependency failure experiment - isolates redis-cart to simulate dependency unavailability for cartservice"
     chaos.mes.org/observability: "enable"
     chaos.mes.org/expected-alerts: "ChaosPodRestart,ChaosHighErrorRate"
 spec:
@@ -20,6 +21,6 @@ spec:
     namespaces:
       - online-boutique
     labelSelectors:
-      app: adservice
+      app: redis-cart
   direction: both
   duration: "3m"

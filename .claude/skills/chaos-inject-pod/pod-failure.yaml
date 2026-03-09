@@ -12,7 +12,7 @@ metadata:
   annotations:
     chaos.mes.org/description: "Pod failure experiment - kills a Pod to test self-healing"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "PodNotReady,ServiceUnavailable"
+    chaos.mes.org/expected-alerts: "ChaosPodNotReady"
 spec:
   action: pod-kill
   mode: one

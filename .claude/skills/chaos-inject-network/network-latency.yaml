@@ -1,5 +1,7 @@
 # Network Latency Experiment Template
 # 测试网络延迟时的系统弹性和性能表现
+# kind 环境: 使用 action: partition（delay 在 kind 下因 ipset 限制失败）
+# 非 kind 环境: 可改为 action: delay 并添加 delay: 段
 
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
@@ -10,30 +12,16 @@ metadata:
     chaos.mes.org/type: network-latency
     chaos.mes.org/namespace: online-boutique
   annotations:
-    chaos.mes.org/description: "Network latency experiment - adds delay to simulate network congestion"
+    chaos.mes.org/description: "Network latency experiment - partitions target pod to simulate network failure"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "HighLatency,High5xxRate"
+    chaos.mes.org/expected-alerts: "ChaosHighLatency,ChaosHighErrorRate"
 spec:
-  action: delay
+  action: partition
   mode: one
   selector:
     namespaces:
       - online-boutique
     labelSelectors:
       app: recommendationservice
-  delay:
-    latency: "500ms"
-    jitter: "50ms"
-    correlation: "0"
-  direction: to
-  # 目标服务（可选，留空则应用于所有出站流量）
-  target:
-    selector:
-      namespaces:
-        - online-boutique
-    mode: one
+  direction: both
   duration: "3m"
-  # 可选：添加丢包
-  # loss:
-  #   loss: "5"
-  #   correlation: "0"

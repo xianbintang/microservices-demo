@@ -1,5 +1,13 @@
 ---
+name: chaos-inject-network
 description: 向目标服务注入网络故障（partition 隔离），kind 环境下使用目标 Pod 模式绕过 ipset 限制。用法：/chaos-inject-network [service] [latency] [duration]
+license: MIT
+compatibility:
+  claude_code: ">=1.0"
+metadata:
+  author: xianb
+  version: 1.0.0
+  generatedBy: claude-sonnet-4-6
 ---
 
 # 网络故障注入

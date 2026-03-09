@@ -12,7 +12,7 @@ metadata:
   annotations:
     chaos.mes.org/description: "Resource exhaustion experiment - applies CPU or memory stress to test graceful degradation"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "ChaosCPUThrottling,ChaosHighMemoryUsage"
+    chaos.mes.org/expected-alerts: "ChaosHighCPUUsage,ChaosCPUThrottling"
 spec:
   mode: one
   selector:
@@ -39,7 +39,7 @@ metadata:
   annotations:
     chaos.mes.org/description: "CPU stress experiment - tests system under high CPU load"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "ChaosCPUThrottling"
+    chaos.mes.org/expected-alerts: "ChaosHighCPUUsage,ChaosCPUThrottling"
 spec:
   mode: one
   selector:
@@ -66,7 +66,7 @@ metadata:
   annotations:
     chaos.mes.org/description: "Memory stress experiment - tests system under high memory pressure"
     chaos.mes.org/observability: "enable"
-    chaos.mes.org/expected-alerts: "ChaosHighMemoryUsage"
+    chaos.mes.org/expected-alerts: "ChaosHighMemoryUsage,ChaosOOMKilled"
 spec:
   mode: one
   selector:
