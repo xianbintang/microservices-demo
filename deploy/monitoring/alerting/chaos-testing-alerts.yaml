@@ -15,10 +15,10 @@ spec:
       rules:
         - alert: AppPodRestart
           annotations:
-            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted in last 5m.'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted in last 1m.'
             summary: Pod restarted.
           expr: |
-            increase(kube_pod_container_status_restarts_total{namespace=~"online-boutique"}[5m]) > 0
+            increase(kube_pod_container_status_restarts_total{namespace=~"online-boutique"}[1m]) > 0
           for: 30s
           labels:
             severity: warning
@@ -88,7 +88,7 @@ spec:
             description: '服务 {{ $labels.service_name }} P95 延迟过高: {{ $value }}ms'
             summary: High latency detected.
           expr: |
-            histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".*"}[5m])) by (le, service_name)) > 100
+            histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".*"}[1m])) by (le, service_name)) > 100
           for: 30s
           labels:
             severity: warning
@@ -98,9 +98,9 @@ spec:
             description: '服务 {{ $labels.service_name }} 错误率过高: {{ $value | humanizePercentage }}'
             summary: High error rate detected.
           expr: |
-            (sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[5m])) by (service_name)
-            - sum(rate(traces_spanmetrics_calls_total{service_name=~".*",status_code="STATUS_CODE_OK"}[5m])) by (service_name))
-            / sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[5m])) by (service_name) > 0.1
+            (sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[1m])) by (service_name)
+            - sum(rate(traces_spanmetrics_calls_total{service_name=~".*",status_code="STATUS_CODE_OK"}[1m])) by (service_name))
+            / sum(rate(traces_spanmetrics_calls_total{service_name=~".*"}[1m])) by (service_name) > 0.1
           for: 30s
           labels:
             severity: critical
@@ -114,9 +114,9 @@ spec:
             summary: High CPU throttling detected.
           expr: |
             (
-              rate(container_cpu_cfs_throttled_periods_total{namespace="online-boutique", container!=""}[5m])
+              rate(container_cpu_cfs_throttled_periods_total{namespace="online-boutique", container!=""}[1m])
               /
-              rate(container_cpu_cfs_periods_total{namespace="online-boutique", container!=""}[5m])
+              rate(container_cpu_cfs_periods_total{namespace="online-boutique", container!=""}[1m])
             ) > 0.5
           for: 30s
           labels:
@@ -128,8 +128,8 @@ spec:
             summary: High CPU usage detected.
           expr: |
             sum by (namespace, pod, container) (
-              rate(container_cpu_usage_seconds_total{namespace="online-boutique", container!=""}[5m])
-            ) > 0.5
+              rate(container_cpu_usage_seconds_total{namespace="online-boutique", container!=""}[1m])
+            ) > 0.1
           for: 30s
           labels:
             severity: warning

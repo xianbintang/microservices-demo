@@ -202,14 +202,14 @@ grafana:
   persistence:
     enabled: false
 
-  # 资源配置
+  # 资源配置 (调整为更小的资源请求以适应单节点环境)
   resources:
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
-      cpu: 2000m
-      memory: 2Gi
+      cpu: 1000m
+      memory: 1Gi
 
   # 预配置数据源
   additionalDataSources:

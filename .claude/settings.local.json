@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl get:*)",
+      "Bash(echo:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl describe:*)",
+      "Bash(sort echo \"\" echo \"✅ Grafana Sidecar 会自动加载带有 ''grafana_dashboard=1'' 标签的 ConfigMap\" echo \"\" echo \">>> 访问 Grafana:\" kubectl get svc kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')",
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl rollout:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
