@@ -6,218 +6,169 @@ compatibility:
   claude_code: ">=1.0"
 metadata:
   author: xianb
-  version: 2.0.0
+  version: 3.0.0
   generatedBy: claude-sonnet-4-6
 ---
 
 # 资源耗尽注入（kill-to-recover）
 
-通过 `kubectl exec` 直接在 Pod 内启动守护进程施加 CPU 或内存压力。kill Pod 即可恢复（新 Pod 不含 chaos 进程）。
+通过 `kubectl exec` 在 Pod 内启动守护进程施加资源压力。注入成功后直接退出，**不自动恢复**，恢复由用户手动执行 `kubectl delete pod`。
 
 ## 用法
 
 ```
-/chaos-inject-resource [service] [type] [value] [duration]
+/chaos-inject-resource [service] [type] [value]
 ```
 
 ### 参数
 
 - `service`: 目标服务（如 `loadgenerator`、`redis-cart`）
 - `type`: `cpu` 或 `memory`
-- `value`: 压力值（CPU：cores 如 `2`；内存：MiB 如 `512`）
-- `duration`: 可选，实验时长（默认：5m）
+- `value`: 压力值（CPU：worker 数量如 `5`；内存：MiB 如 `512`）
 
 ## 前置要求
 
-### 容器需要有 python 或 shell
+- 容器需要有 `sh`（Alpine/busybox 均满足）
+- CPU 注入使用 `yes > /dev/null`（无需 stress-ng 或 python）
+- 内存注入使用 python3 double-fork（需要 python3）
+- `/dev/shm` 可写（用于存放注入脚本，绕过只读 rootfs）
+- `setsid` 可用（alpine busybox 内置）
 
-- ✅ 支持：`loadgenerator` (python)、`redis-cart` (alpine+python3)、`emailservice` (python)
-- ❌ 不支持：`frontend`、`checkoutservice` 等 distroless 镜像
+## 容器支持情况
 
-### 双叉守护进程要求
-
-容器需要 `allowPrivilegeEscalation: true` 或放开 seccomp 限制（大多数默认配置已满足）。
+| 服务 | CPU 注入 | 内存注入 | 备注 |
+|------|---------|---------|------|
+| redis-cart | ✅ | ✅ | Alpine, /dev/shm 可写 |
+| loadgenerator | ✅ | ✅ | Python 镜像 |
+| emailservice | ✅ | ✅ | Python 镜像 |
+| recommendationservice | ✅ | ✅ | Python 镜像 |
+| frontend 等 distroless | ❌ | ❌ | 无 shell |
 
 ## 执行步骤
 
-### 步骤 1：检查目标容器
-
-```bash
-kubectl get pods -n online-boutique -l app=<service> -o name | head -1
-```
-
-### 步骤 2：记录基准资源使用
+### 步骤 1：获取 Pod
 
 ```bash
 POD=$(kubectl get pods -n online-boutique -l app=<service> -o name | head -1 | cut -d'/' -f2)
-
-echo "📊 基准资源使用（${POD}）"
-kubectl exec -n online-boutique ${POD} -- ps aux | grep -E "PID|stress" | head -5
-
-kubectl top pod -n online-boutique ${POD}
+echo "Target Pod: $POD"
 ```
 
-### 步骤 3：注入故障
-
-**选择目标 Pod（通常选第一个）：**
+### 步骤 2：记录基准
 
 ```bash
-POD=$(kubectl get pods -n online-boutique -l app=<service> -o name | head -1 | cut -d'/' -f2)
+kubectl exec -n online-boutique $POD -- sh -c "
+echo 'Load avg:' \$(cat /proc/loadavg)
+ps aux | head -5
+"
 ```
 
-**CPU 压力（双叉守护进程）：**
+### 步骤 3：注入 CPU 压力（yes worker）
+
+将脚本写入 `/dev/shm`（绕过只读 rootfs），用 `setsid` 脱离 exec session：
 
 ```bash
-kubectl exec -n online-boutique ${POD} -- python3 -c "
-import os, sys, subprocess, time, signal
-
-# 当前进程
-pid = os.getpid()
-print(f'Injector PID: {pid}', file=sys.stderr, flush=True)
-
-# 第一次 fork → 子进程退出
-if os.fork() > 0:
-    sys.exit(0)
-
-# 第二次 fork → 孙进程独立运行
-if os.fork() > 0:
-    sys.exit(0)
-
-# 孙进程：创建独立 session + detach
-os.setsid()
-os.chdir('/')
-signal.signal(signal.SIGCHLD, signal.SIG_IGN)
-
-print(f'Daemon PID: {os.getpid()}', file=sys.stderr, flush=True)
-
-# 启动 stress-ng（持续占用 CPU）
-subprocess.run(['stress-ng', '--cpu', '2', '--cpu-load', str(<value> * 100)])
-" &
-sleep 2
+kubectl exec -n online-boutique $POD -- sh -c '
+cat > /dev/shm/cpu_stress.sh << "EOF"
+#!/bin/sh
+for i in $(seq 1 <value>); do
+  yes > /dev/null &
+done
+wait
+EOF
+chmod +x /dev/shm/cpu_stress.sh
+setsid /dev/shm/cpu_stress.sh &
+echo "Injected <value> yes workers, setsid PID=$!"
+'
 ```
 
-**内存压力（双叉守护进程）：**
+### 步骤 4：注入内存压力（python3 double-fork）
 
 ```bash
-kubectl exec -n online-boutique ${POD} -- python3 -c "
+kubectl exec -n online-boutique $POD -- python3 -c "
 import os, sys, time
-
-# 当前进程
-pid = os.getpid()
-print(f'Injector PID: {pid}', file=sys.stderr, flush=True)
-
-# 第一次 fork
-if os.fork() > 0:
-    sys.exit(0)
-
-# 第二次 fork
-if os.fork() > 0:
-    sys.exit(0)
-
-# 孙进程：守护化
+if os.fork() > 0: sys.exit(0)
+if os.fork() > 0: sys.exit(0)
 os.setsid()
-os.chdir('/')
-print(f'Daemon PID: {os.getpid()}', file=sys.stderr, flush=True)
-
-# 持续占用内存（避免被优化）
-size = <value> * 1024 * 1024  # MiB → bytes
-buffer = bytearray(size)
+size = <value> * 1024 * 1024
+buf = bytearray(size)
 while True:
-    # 触发实际访问，防止被优化掉
-    _ = buffer[len(buffer)//2]
+    _ = buf[len(buf)//2]
     time.sleep(1)
 " &
 sleep 2
 ```
 
-### 步骤 4：确认注入状态
+### 步骤 5：确认注入成功
 
 ```bash
-kubectl exec -n online-boutique ${POD} -- ps aux | grep -E "stress-ng|python3"
-kubectl top pod -n online-boutique ${POD}
+sleep 3
+kubectl exec -n online-boutique $POD -- sh -c "
+echo 'Load avg:' \$(cat /proc/loadavg)
+echo 'Chaos processes:'
+ps aux | grep -E 'yes|python3' | grep -v grep
+"
 ```
 
-期望看到 stress-ng 或 python3 进程占用资源。
+进程存在即注入成功，**直接退出，不等待告警，不自动恢复**。
 
-### 步骤 5：等待告警触发
+输出注入摘要：
 
-```bash
-echo "⏳ 等待 <duration> 观察告警..."
-sleep <duration>
 ```
-
-### 步骤 6：恢复（kill-to-recover）
-
-```bash
-kubectl delete pod -n online-boutique ${POD}
-echo "✅ Pod 已删除，新 Pod 将自动恢复（无 chaos 进程）"
-```
-
-验证新 Pod 干净：
-
-```bash
-NEW_POD=$(kubectl get pods -n online-boutique -l app=<service> -o name | head -1 | cut -d'/' -f2)
-kubectl exec -n online-boutique ${NEW_POD} -- ps aux | grep -E "stress-ng|python3" || echo "✅ 新 Pod 无 chaos 进程"
+✅ 注入完成
+   Pod:     <pod>
+   Service: <service>
+   类型:    CPU (<value> × yes workers)
+   恢复方式: kubectl delete pod -n online-boutique <pod>
 ```
 
 ## 预期告警
 
 | 故障类型 | 预期告警 | 触发阈值 |
 |---------|---------|---------|
-| CPU | ChaosHighCPUUsage | > 0.5 cores 持续 1m |
-| CPU | ChaosCPUThrottling | 节流 > 50% 持续 1m |
-| 内存 | ChaosHighMemoryUsage | > 400MiB 持续 1m |
-| 内存超限 | ChaosOOMKilled | 容器被 OOM 终止 |
+| CPU | AppHighCPUUsage | > 0.1 cores 持续 30s |
+| CPU | AppCPUThrottling | 节流 > 50% 持续 30s |
+| 内存 | AppHighMemoryUsage | > 400MiB 持续 30s |
+
+## 恢复方式（手动执行）
+
+```bash
+kubectl delete pod -n online-boutique <pod>
+```
+
+kill Pod 后 Deployment 自动重建干净的新 Pod，chaos 进程随 cgroup 一起消亡。
 
 ## kill-to-recover 原理
 
 ```
 注入阶段：
-kubectl exec → python3 double-fork → 守护进程 PID 30
+kubectl exec → setsid cpu_stress.sh → yes × N workers
    ↓
-旧 Pod 进程表：
-  PID 1   业务进程
-  PID 30  python3 [chaos]  ← exec 注入
+Pod 进程表：
+  PID 1    redis-server
+  PID 55   yes  ← chaos
+  PID 56   yes  ← chaos
+  ...
 
-恢复阶段：
+恢复阶段（手动）：
 kubectl delete pod
    ↓
-Linux cgroup 清空：PID 1 + PID 30 全部消亡
+Linux cgroup 清空：所有进程消亡（含 chaos）
    ↓
-Deployment 控制器创建新 Pod
-   ↓
-新 Pod 进程表：
-  PID 1   业务进程
-  （无 chaos 进程）  ← ✅ kill-to-recover
+新 Pod：只有 PID 1 业务进程 ✅
 ```
-
-## 与 Chaos Mesh StressChaos 对比
-
-| 方式 | 注入位置 | Kill Pod 能恢复？ | 原理 |
-|-----|---------|-----------------|------|
-| StressChaos | chaos-daemon 外部管理 | ❌ 否 | daemon 监听 Pod，新 Pod 重新注入 |
-| **kubectl exec** | Pod 内部进程 | ✅ 是 | 进程属于 Pod cgroup，Pod 死→进程死→新 Pod 干净 |
-
-## 局限性
-
-1. **需要容器有 python**：distroless 镜像不支持（可用 `kubectl debug` ephemeral container 替代）
-2. **注入状态不持久**：重启即恢复（这正是 kill-to-recover 的价值）
-3. **需要权限**：double-fork 需要 allowPrivilegeEscalation 或放开 seccomp
-
-## 什么时候选择 kill-to-recover
-
-- 应急演练：模拟「重启 Pod 能否解决问题」的判断场景
-- 开发调试：临时注入故障，调试完 kill pod 快速清理
-- 入门级混沌测试：不想留下 Chaos CRD 状态，测试完即走
 
 ## 核心原则
 
-**告警规则必须代码固化** — 告警规则存储于 `deploy/monitoring/alerting/chaos-testing-alerts.yaml`。
+- **CPU 注入固定用 `yes > /dev/null`**：Alpine/busybox 通用，无需额外工具
+- **脚本写入 `/dev/shm`**：绕过只读 rootfs，busybox `setsid` 需要可执行文件路径
+- **注入成功即退出**：不等待、不监控、不自动恢复，保持 skill 职责单一
+- **告警规则代码固化**：`deploy/monitoring/alerting/chaos-testing-alerts.yaml`
 
 ## 验收标准
 
-- [x] 检查目标容器存在且有 python/shell
-- [x] 记录基准 CPU/内存使用量
-- [x] 使用双叉守护进程注入（防止随主进程退出）
-- [x] 根据 type 参数生成正确的 stress-ng 或内存占用命令
-- [x] kill Pod 后验证新 Pod 无 chaos 进程
+- [x] 获取目标 Pod 并确认存在
+- [x] 记录基准 load avg
+- [x] CPU：通过 `setsid /dev/shm/cpu_stress.sh` 启动 N 个 `yes > /dev/null`
+- [x] 内存：通过 python3 double-fork 占用指定 MiB
+- [x] exec session 结束后进程仍存在（setsid 脱离）
+- [x] 输出注入摘要后退出，不自动恢复
