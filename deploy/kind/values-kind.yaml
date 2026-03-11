@@ -9,8 +9,13 @@ images:
 selfHostedObservability:
   enabled: true
   imagePullSecret: ""
+  prometheusRemoteWrite:
+    endpoint: "http://47.83.217.162:9090/api/v1/write"
+  tempo:
+    endpoint: "47.83.217.162:4317"
+    insecure: true
   loki:
-    otlpEndpoint: "http://loki.monitoring.svc:3100/otlp"
+    otlpEndpoint: "http://47.83.217.162:3100/otlp"
 
 volcengineAPM:
   enabled: false

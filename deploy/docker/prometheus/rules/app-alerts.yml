@@ -1,0 +1,211 @@
+groups:
+  # ==========================================
+  # 业务告警规则
+  # ==========================================
+  - name: microservices.business
+    interval: 30s
+    rules:
+      # Frontend HTTP 5xx 错误率过高
+      - alert: FrontendHighErrorRate
+        expr: |
+          (
+            sum(rate(http_server_request_duration_seconds_count{
+              job="frontend",
+              http_response_status_code=~"5.."
+            }[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{
+              job="frontend"
+            }[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          service: frontend
+        annotations:
+          summary: "Frontend 5xx 错误率超过 5%"
+          description: "frontend 服务当前 5xx 错误率: {{ $value | humanizePercentage }}"
+          runbook_url: "https://wiki.internal/runbook/frontend-errors"
+
+      # gRPC 服务错误率过高 (通用)
+      - alert: GRPCServiceHighErrorRate
+        expr: |
+          (
+            sum(rate(rpc_server_duration_seconds_count{rpc_grpc_status_code!="0"}[5m])) by (service)
+            /
+            sum(rate(rpc_server_duration_seconds_count[5m])) by (service)
+          ) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "gRPC 服务 {{ $labels.service }} 错误率过高"
+          description: "服务 {{ $labels.service }} gRPC 错误率: {{ $value | humanizePercentage }}"
+
+      # P99 延迟过高
+      - alert: HighP99Latency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_server_request_duration_seconds_bucket{
+              job="frontend"
+            }[5m])) by (le)
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          service: frontend
+        annotations:
+          summary: "Frontend P99 延迟超过 2s"
+          description: "当前 P99 延迟: {{ $value | humanizeDuration }}"
+
+      # 服务不可用 (Pod 数为 0)
+      - alert: ServiceDown
+        expr: |
+          kube_deployment_status_replicas_available{
+            namespace="online-boutique"
+          } == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务 {{ $labels.deployment }} 不可用"
+          description: "online-boutique 中 {{ $labels.deployment }} 没有可用 Pod"
+
+      # 服务重启频繁
+      - alert: ServiceRestartingFrequently
+        expr: |
+          increase(kube_pod_container_status_restarts_total{
+            namespace="online-boutique"
+          }[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} 重启频繁"
+          description: "Pod {{ $labels.pod }} 在过去 1 小时内重启了 {{ $value }} 次"
+
+  # ==========================================
+  # 基础设施告警规则
+  # ==========================================
+  - name: infrastructure
+    interval: 60s
+    rules:
+      # Node CPU 使用率过高
+      - alert: NodeHighCPU
+        expr: |
+          100 - (avg by(node) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
+          ) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node }} CPU 使用率超过 80%"
+          description: "节点 {{ $labels.node }} CPU 使用率: {{ $value | humanize }}%"
+
+      # Node 内存使用率过高
+      - alert: NodeHighMemory
+        expr: |
+          (1 - (
+            node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+          )) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node }} 内存使用率超过 85%"
+          description: "节点 {{ $labels.node }} 内存使用率: {{ $value | humanize }}%"
+
+      # Pod 内存使用接近 limit
+      - alert: PodHighMemoryUsage
+        expr: |
+          (
+            container_memory_working_set_bytes{
+              namespace="online-boutique",
+              container!="",
+              container!="POD"
+            }
+            /
+            kube_pod_container_resource_limits{
+              namespace="online-boutique",
+              resource="memory",
+              container!="",
+              container!="POD"
+            }
+          ) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} 内存使用超过 limit 的 85%"
+          description: "Pod {{ $labels.pod }} 内存使用率: {{ $value | humanizePercentage }}"
+
+      # PVC 磁盘使用率过高
+      - alert: PVCHighUsage
+        expr: |
+          (
+            kubelet_volume_stats_used_bytes
+            /
+            kubelet_volume_stats_capacity_bytes
+          ) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PVC {{ $labels.persistentvolumeclaim }} 使用率超过 80%"
+          description: "PVC {{ $labels.persistentvolumeclaim }} 使用率: {{ $value | humanizePercentage }}"
+
+      # PVC 即将满
+      - alert: PVCCriticalUsage
+        expr: |
+          (
+            kubelet_volume_stats_used_bytes
+            /
+            kubelet_volume_stats_capacity_bytes
+          ) > 0.95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PVC {{ $labels.persistentvolumeclaim }} 使用率超过 95%"
+          description: "PVC {{ $labels.persistentvolumeclaim }} 使用率: {{ $value | humanizePercentage }}, 请立即扩容"
+
+  # ==========================================
+  # 可观测性组件告警
+  # ==========================================
+  - name: observability
+    interval: 60s
+    rules:
+      # Prometheus 无法抓取目标
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus 无法抓取目标 {{ $labels.job }}"
+          description: "目标 {{ $labels.instance }} 已经 down 超过 5 分钟"
+
+      # Prometheus 数据积压
+      - alert: PrometheusTSDBCompactionsFailing
+        expr: rate(prometheus_tsdb_compactions_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus TSDB 压缩失败"
+          description: "Prometheus TSDB 压缩操作正在失败"
+
+      # Loki 写入失败
+      - alert: LokiWriteRequestsFailing
+        expr: |
+          sum(rate(loki_request_duration_seconds_count{
+            route=~"/loki/api/v1/push",
+            status_code=~"5.."
+          }[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki 写入请求失败"
+          description: "Loki 正在返回 5xx 错误"

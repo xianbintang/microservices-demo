@@ -43,48 +43,30 @@ prometheus:
       limits:
         cpu: 1000m
         memory: 2Gi
-    retention: 1d
-    retentionSize: "5GiB"
+    retention: 1h
+    retentionSize: "500MB"
     # Remove VKE-specific scrape job (kind has native node-exporter)
     additionalScrapeConfigs: []
+    # Point to remote Alertmanager (local AM disabled)
+    additionalAlertManagerConfigs:
+      - scheme: http
+        static_configs:
+          - targets:
+              - "47.83.217.162:9093"
+    remoteWrite:
+      - url: "http://47.83.217.162:9090/api/v1/write"
+        queueConfig:
+          maxSamplesPerSend: 1000
+          maxShards: 5
+          capacity: 300
 
-# ── Grafana: public registry, ClusterIP, disable streaming ───
+# ── Grafana: disabled — use remote Grafana at 47.83.217.162:3000 ───
 grafana:
-  imagePullSecrets: []
-  image:
-    registry: docker.io
-    repository: grafana/grafana
-    tag: ""
-  sidecar:
-    image:
-      registry: quay.io
-      repository: kiwigrid/k8s-sidecar
-      tag: "2.5.0"
-  downloadDashboardsImage:
-    registry: docker.io
-    repository: curlimages/curl
-    tag: "8.11.1"
-  initChownData:
-    image:
-      registry: docker.io
-      repository: library/busybox
-      tag: "1.37.0"
-  service:
-    type: ClusterIP
-  # Disable Tempo gRPC streaming (Tempo 2.5.0 doesn't support /api/search/stream)
-  grafana.ini:
-    feature_toggles:
-      traceQLStreaming: "false"
-      enable: ""
+  enabled: false
 
-# ── AlertManager: reset to chart defaults ─────────────────────
+# ── AlertManager: disabled — use remote Alertmanager at 47.83.217.162:9093 ──
 alertmanager:
-  alertmanagerSpec:
-    imagePullSecrets: []
-    image:
-      registry: quay.io
-      repository: prometheus/alertmanager
-      tag: v0.28.1
+  enabled: false
 
 # ── kube-state-metrics: reset to chart defaults ───────────────
 kube-state-metrics:
