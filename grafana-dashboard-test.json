@@ -1,0 +1,210 @@
+{
+  "title": "test",
+  "tags": [
+    "test"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 16,
+  "version": 4,
+  "refresh": "30s",
+  "panels": [
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum by (service) (label_replace(rate(container_cpu_usage_seconds_total{namespace=\"online-boutique\",container!=\"POD\"}[5m]), \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) / sum by (service) (label_replace(kube_pod_container_resource_limits{namespace=\"online-boutique\",resource=\"cpu\"}, \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) * 100",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU 利用率 % (按服务)",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "sum by (service) (label_replace(container_memory_working_set_bytes{namespace=\"online-boutique\",container!=\"POD\"}, \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) / sum by (service) (label_replace(kube_pod_container_resource_limits{namespace=\"online-boutique\",resource=\"memory\"}, \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) * 100",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "内存利用率 % (按服务)",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{namespace=\"online-boutique\"}[5m]))",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP 请求率 (按服务)",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{namespace=\"online-boutique\",http_response_status_code=~\"2..\"}[5m])) / sum by (service_name) (rate(traces_spanmetrics_calls_total{namespace=\"online-boutique\"}[5m])) * 100",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP 请求成功率 (按服务)",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, service_name) (rate(traces_spanmetrics_duration_milliseconds_bucket{namespace=\"online-boutique\"}[5m]))) / 1000",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 延迟 (按服务)",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum(kube_deployment_status_replicas_available{namespace=\"online-boutique\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "运行 Pod 数",
+      "type": "stat"
+    },
+    {
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 16
+      },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"online-boutique\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Pod 重启次数",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "sum by (service) (label_replace(rate(container_cpu_cfs_throttled_periods_total{namespace=\"online-boutique\"}[5m]), \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) / sum by (service) (label_replace(rate(container_cpu_cfs_periods_total{namespace=\"online-boutique\"}[5m]), \"service\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]+-[a-z0-9]+$\")) * 100",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU 节流率 (按服务)",
+      "type": "timeseries"
+    }
+  ]
+}
