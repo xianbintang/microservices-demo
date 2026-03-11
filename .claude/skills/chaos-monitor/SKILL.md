@@ -109,7 +109,7 @@ Pod 状态:
   告警: X 条
 
 访问地址:
-  Grafana: http://localhost:3000
+  Grafana: http://47.83.217.162:3000
 ```
 
 ## 核心原则

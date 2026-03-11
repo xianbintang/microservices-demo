@@ -13,7 +13,7 @@ description: "Installs and configures the mcp-grafana MCP server for this repo. 
 
 ### 1. 检查 Grafana 可访问
 ```bash
-curl -sS --noproxy localhost -u admin:admin http://localhost:3000/api/health
+curl -sS --noproxy localhost -u admin:admin http://47.83.217.162:3000/api/health
 ```
 
 ### 2. 写入 .mcp.json（用户名密码方式）
@@ -25,7 +25,7 @@ cat > .mcp.json << MCPJSON
       "command": "mcp-grafana",
       "args": [],
       "env": {
-        "GRAFANA_URL": "http://localhost:3000",
+        "GRAFANA_URL": "http://47.83.217.162:3000",
         "GRAFANA_USERNAME": "admin",
         "GRAFANA_PASSWORD": "admin",
         "GRAFANA_ORG_ID": "1"

@@ -98,13 +98,15 @@ groups:
     rules:
       - alert: AppCPUThrottling
         annotations:
-          description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU throttling rate > 50%.'
+          description: 'Service {{ $labels.label_app }} container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU throttling rate > 50%.'
           summary: High CPU throttling detected.
         expr: |
-          (
+          sum by (namespace, pod, container, label_app) (
             rate(container_cpu_cfs_throttled_periods_total{namespace="online-boutique", container!=""}[1m])
-            /
+            / on(namespace, pod, container)
             rate(container_cpu_cfs_periods_total{namespace="online-boutique", container!=""}[1m])
+            * on(namespace, pod) group_left(label_app)
+            kube_pod_labels{namespace="online-boutique"}
           ) > 0.5
         for: 30s
         labels:
@@ -112,11 +114,13 @@ groups:
 
       - alert: AppHighCPUUsage
         annotations:
-          description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU usage > 0.5 core.'
+          description: 'Service {{ $labels.label_app }} container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} CPU usage > 0.1 core.'
           summary: High CPU usage detected.
         expr: |
-          sum by (namespace, pod, container) (
+          sum by (namespace, pod, container, label_app) (
             rate(container_cpu_usage_seconds_total{namespace="online-boutique", container!=""}[1m])
+            * on(namespace, pod) group_left(label_app)
+            kube_pod_labels{namespace="online-boutique"}
           ) > 0.1
         for: 30s
         labels:

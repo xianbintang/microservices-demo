@@ -1,5 +1,5 @@
 ---
-description: 一键部署 Online Boutique + 完整可观测性栈（Prometheus, Grafana, Loki, Tempo）到本地 kind 集群或任意远端 K8s 集群。自动检测 arm64/amd64 环境，arm64 从源码构建原生镜像，amd64 拉取 Google 预构建镜像。用法：/kind-deploy [local|down|remote REGISTRY=xxx [CONTEXT=yyy]]
+description: 一键部署 Online Boutique + kube-prometheus-stack（Prometheus + Promtail）到本地 kind 集群或任意远端 K8s 集群。自动检测 arm64/amd64 环境，arm64 从源码构建原生镜像，amd64 拉取 Google 预构建镜像。用法：/kind-deploy [local|down|remote REGISTRY=xxx [CONTEXT=yyy]]
 ---
 
 ## 任务
@@ -102,13 +102,15 @@ make -f Makefile.kind prepare-images
 
 **arm64 说明：** cartservice 保留 amd64（Grpc.Tools 2.76.0 arm64 protoc 有 SIGSEGV bug）；redis/busybox/otelcol 拉取公共多架构镜像。
 
-### 4. 部署可观测性栈
+### 4. 部署监控组件（kube-prometheus-stack + Promtail）
 
 ```bash
 make -f Makefile.kind deploy-monitoring
 ```
 
-部署：kube-prometheus-stack → Loki → Tempo → Promtail（均使用公共多架构镜像，containerd 自动选对应架构）
+部署：kube-prometheus-stack → Promtail（均使用公共多架构镜像，containerd 自动选对应架构）
+
+**说明：** Grafana、Loki、Tempo、Alertmanager 运行在远端 Docker 栈（`47.83.217.162`），与 kind 集群部署解耦。kind 本地只运行 Prometheus（负责 k8s 指标采集 + remote_write 到远端）和 Promtail（负责容器日志采集 + 推送到远端 Loki）。
 
 ### 5. 部署 Online Boutique 微服务
 
@@ -156,22 +158,10 @@ make -f Makefile.kind port-forward
 make -f Makefile.kind status
 ```
 
-### 8. 配置 mcp-grafana
-
-执行 `/mcp-grafana-setup` skill 配置 Grafana MCP 服务器：
-
-1. 创建 Grafana Service Account `mcp-grafana`（Admin 角色）
-2. 生成 Service Account Token
-3. 写入 `.mcp.json` 配置文件
-4. 确保 `.mcp.json` 已加入 `.gitignore`
-
-**注意：** 此步骤需要 Claude 用户确认后执行。若用户跳过，可稍后手动运行 `/mcp-grafana-setup`。
-
-### 9. 输出访问地址
+### 8. 输出访问地址
 
 - Frontend: http://localhost:8080
-- Grafana:  http://localhost:3000（admin / admin）
-- mcp-grafana: 已配置（重启 Claude Code 后生效）
+- Grafana:  http://47.83.217.162:3000（admin / admin，远端 Docker 栈，与 kind 集群独立部署）
 
 ---
 
@@ -196,7 +186,7 @@ make -f Makefile.kind deploy-remote REGISTRY=<value> [CONTEXT=<value>]
 **自动流程：**
 1. 自动检测目标集群 node 架构（`kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}'`）
 2. 根据检测结果构建对应架构镜像（arm64 or amd64），推送到 REGISTRY
-3. 部署完整监控栈 + Online Boutique 应用
+3. 部署监控组件 + Online Boutique 应用
 
 **示例：**
 ```bash
@@ -217,9 +207,9 @@ make -f Makefile.kind deploy-remote REGISTRY=my.registry.io CONTEXT=my-arm64-clu
 | Registry 空（重建后镜像丢失） | 先检查 `podman images \| grep localhost:5001`，有则用步骤 3b 脚本批量推送；全无则运行 `make -f Makefile.kind prepare-images` |
 | `ImagePullBackOff` | 检查 `make pull-images` / `build-images` 是否成功；`docker network inspect kind` 确认 kind-registry 在 kind 网络中 |
 | `CrashLoopBackOff` | `kubectl logs -n online-boutique <pod>` 查看日志 |
-| Grafana 无数据 | 等 2-3 分钟让 spanmetrics 开始生成；检查 `kubectl get pods -n monitoring` 全部 Running |
+| Prometheus 无数据 | 检查 `kubectl get pods -n monitoring` 全部 Running；等 2-3 分钟让 spanmetrics 开始生成 |
 | kind 创建失败 | 确认 Docker/Podman 正在运行且分配了 8GB+ 内存 |
-| 端口冲突 8080/3000 | 手动执行 `kubectl port-forward` 指定其他端口 |
+| 端口冲突 8080 | 手动执行 `kubectl port-forward` 指定其他端口 |
 | arm64 build 超时 | 单次 build 最慢（adservice Java）约 10 分钟；可单独重试 `make -f Makefile.kind build-images` |
 | containerd 镜像未更新 | 删除缓存后重启 Pod：`podman exec online-boutique-control-plane ctr --namespace k8s.io images rm <image>` + `kubectl rollout restart deployment/<svc> -n online-boutique` |
 
@@ -228,6 +218,5 @@ make -f Makefile.kind deploy-remote REGISTRY=my.registry.io CONTEXT=my-arm64-clu
 - `make up` 幂等：重复运行不会重建已存在的资源
 - 所有数据使用 emptyDir（临时），Pod 重启后丢失
 - SRE agent 在 kind 模式下禁用（需自定义 `sre-agent:latest` 镜像）
-- DingTalk 告警未配置（无 token）
 - Tempo gRPC streaming 已禁用（Tempo 2.5.0 不支持 `/api/search/stream`）
 - 调整负载：`make -f Makefile.kind patch-loadgenerator LOAD_USERS=20`

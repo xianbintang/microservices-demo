@@ -8,7 +8,7 @@ description: 配置 mcp-grafana MCP 服务器，使 Claude 可以直接查询 Gr
 
 ## 参数解析
 
-- 无参数：使用默认配置（`http://localhost:3000`，admin/admin 凭证）
+- 无参数：使用默认配置（`http://47.83.217.162:3000`，admin/admin 凭证）
 - `GRAFANA_URL`：指定 Grafana 地址（如 `http://grafana.example.com:3000`）
 - `TOKEN`：指定已有的 Service Account Token（跳过创建步骤）
 
@@ -19,13 +19,12 @@ description: 配置 mcp-grafana MCP 服务器，使 Claude 可以直接查询 Gr
 ### 1. 检查 Grafana 可访问性
 
 ```bash
-GRAFANA_URL="${1:-http://localhost:3000}"
-curl -s --noproxy localhost -u admin:admin "${GRAFANA_URL}/api/health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Grafana {d.get(\"version\", \"unknown\")} OK')"
+GRAFANA_URL="${1:-http://47.83.217.162:3000}"
+curl -s -u admin:admin "${GRAFANA_URL}/api/health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Grafana {d.get(\"version\", \"unknown\")} OK')"
 ```
 
 若失败，检查：
-- 端口转发是否运行（kind 环境）：`kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80 &`
-- Grafana Pod 是否 Running：`kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana`
+- 远端服务是否运行：`ssh root@47.83.217.162 'cd /opt/obs-stack && docker compose ps grafana'`
 
 ### 2. 创建 Service Account
 
@@ -118,7 +117,7 @@ cat .mcp.json | python3 -c "import json,sys; d=json.load(sys.stdin); print('✅ 
 ✅ mcp-grafana 配置完成！
 
 配置文件：.mcp.json
-Grafana URL：http://localhost:3000
+Grafana URL：http://47.83.217.162:3000
 Service Account：mcp-grafana (Admin)
 
 使用方法：
