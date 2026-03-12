@@ -68,8 +68,8 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "ALERTS{alertname=~\"App.*\"} == 1",
-          "legendFormat": "{{alertname}} [{{severity}}] {{pod}}{{label_app}}{{service_name}}",
+          "expr": "ALERTS{alertname=~\"App.*\", alertstate=\"firing\"} == 1",
+          "legendFormat": "{{alertname}} [{{severity}}] {{pod}}{{label_app}}{{service_name}} | src={{prometheus}}/{{prometheus_replica}}",
           "refId": "A"
         }
       ],

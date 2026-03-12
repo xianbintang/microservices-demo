@@ -47,18 +47,25 @@ prometheus:
     retentionSize: "500MB"
     # Remove VKE-specific scrape job (kind has native node-exporter)
     additionalScrapeConfigs: []
-    # Point to remote Alertmanager (local AM disabled)
-    additionalAlertManagerConfigs:
-      - scheme: http
-        static_configs:
-          - targets:
-              - "47.83.217.162:9093"
+    # Local cluster acts as collector only: disable local rule evaluation/alert forwarding
+    ruleSelector:
+      matchLabels:
+        local-alerting: "enabled"
+    ruleNamespaceSelector: {}
+    additionalAlertManagerConfigs: []
+    # Remote write to remote Prometheus (metrics only)
     remoteWrite:
       - url: "http://47.83.217.162:9090/api/v1/write"
         queueConfig:
-          maxSamplesPerSend: 1000
-          maxShards: 5
-          capacity: 300
+          maxSamplesPerSend: 10000
+          maxShards: 30
+          capacity: 5000
+          minShards: 1
+          maxRetries: 3
+        writeRelabelConfigs:
+          - sourceLabels: [__name__]
+            action: drop
+            regex: "ALERTS|ALERTS_FOR_STATE"
 
 # ── Grafana: disabled — use remote Grafana at 47.83.217.162:3000 ───
 grafana:
@@ -84,3 +91,8 @@ prometheus-node-exporter:
     registry: quay.io
     repository: prometheus/node-exporter
     tag: ""
+
+# Collector-only mode in kind: do not create built-in alert rules locally
+# (alert evaluation is centralized on remote Prometheus)
+defaultRules:
+  create: false
