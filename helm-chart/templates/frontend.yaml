@@ -110,26 +110,12 @@ spec:
             value: "{{ .Values.shoppingAssistantService.name }}:80"
           - name: ENV_PLATFORM
             value: {{ .Values.frontend.platform | quote }}
-          {{- if .Values.opentelemetryCollector.create }}
-          - name: COLLECTOR_SERVICE_ADDR
-            value: "{{ .Values.opentelemetryCollector.name }}:4317"
-          - name: OTEL_SERVICE_NAME
-            value: "{{ .Values.frontend.name }}"
-          {{- end }}
           {{- if .Values.selfHostedObservability.enabled }}
           - name: COLLECTOR_SERVICE_ADDR
             value: "{{ .Values.selfHostedObservability.collectorName }}:4317"
           - name: OTEL_SERVICE_NAME
             value: "{{ .Values.frontend.name }}"
           - name: ENABLE_TRACING
-            value: "1"
-          {{- end }}
-          {{- if .Values.googleCloudOperations.tracing }}
-          - name: ENABLE_TRACING
-            value: "1"
-          {{- end }}
-          {{- if .Values.googleCloudOperations.profiler }}
-          - name: ENABLE_PROFILER
             value: "1"
           {{- end }}
           - name: CYMBAL_BRANDING
@@ -230,9 +216,6 @@ spec:
     - ./{{ .Values.productCatalogService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.recommendationService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.shippingService.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---

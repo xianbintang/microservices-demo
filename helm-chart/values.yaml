@@ -41,17 +41,6 @@ authorizationPolicies:
   # Specifies if the AuthorizationPolicies are created or not. If true, one fine granular AuthorizationPolicy per app is created.
   create: false
 
-opentelemetryCollector:
-  create: false
-  name: opentelemetrycollector
-  # Specifies the project id for the otel collector. If set as "PROJECT_ID" (default value), an initContainer will automatically retrieve the project id value from the metadata server.
-  projectId: "PROJECT_ID"
-
-googleCloudOperations:
-  profiler: false
-  tracing: false
-  metrics: false
-
 # 自建可观测性栈配置
 # 需要在部署时指定 prometheusRemoteWrite、tempo、loki 的 endpoint
 selfHostedObservability:

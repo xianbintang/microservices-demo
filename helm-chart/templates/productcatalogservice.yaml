@@ -75,26 +75,12 @@ spec:
         env:
         - name: PORT
           value: "3550"
-        {{- if .Values.opentelemetryCollector.create }}
-        - name: COLLECTOR_SERVICE_ADDR
-          value: "{{ .Values.opentelemetryCollector.name }}:4317"
-        - name: OTEL_SERVICE_NAME
-          value: "{{ .Values.productCatalogService.name }}"
-        {{- end }}
         {{- if .Values.selfHostedObservability.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.selfHostedObservability.collectorName }}:4317"
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.productCatalogService.name }}"
         - name: ENABLE_TRACING
-          value: "1"
-        {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
-        - name: ENABLE_TRACING
-          value: "1"
-        {{- end }}
-        {{- if not .Values.googleCloudOperations.profiler }}
-        - name: DISABLE_PROFILER
           value: "1"
         {{- end }}
         - name: EXTRA_LATENCY
@@ -168,9 +154,6 @@ spec:
   egress:
   - hosts:
     - istio-system/*
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---
