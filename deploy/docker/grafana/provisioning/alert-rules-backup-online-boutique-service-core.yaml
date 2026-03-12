@@ -1,0 +1,149 @@
+# Backup only (not auto-provisioned)
+# Source: Grafana managed alert rules created via API
+# Purpose: one-click/manual re-creation if rules are deleted
+#
+# Recreate with API endpoint:
+#   POST /api/v1/provisioning/alert-rules
+# Important flags:
+#   - disableProvenance: true   # keep editable in Grafana UI
+#   - folderUID: <current Online Boutique folder UID>
+#
+# Current remote values at backup time:
+#   folderUID: efft2wo0h1b7kc
+#   ruleGroup: service-alerts
+
+group:
+  name: service-alerts
+  folderUID: efft2wo0h1b7kc
+  orgID: 1
+  for: 1m
+  noDataState: NoData
+  execErrState: Alerting
+  disableProvenance: true
+
+rules:
+  - title: ServiceHighErrorRate
+    uid: cfft555h5g6wwe
+    severity: critical
+    threshold:
+      op: gt
+      value: 0.05
+    expr: |
+      (
+        (
+          sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m]))
+          -
+          sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+",status_code="STATUS_CODE_OK"}[1m]))
+        )
+        /
+        clamp_min(sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m])), 0.001)
+      )
+
+  - title: ServiceTrafficSpike
+    uid: afft555n979c0d
+    severity: warning
+    threshold:
+      op: gt
+      value: 2.5
+    expr: |
+      (
+        sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m]))
+        /
+        clamp_min(sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[30m])), 0.001)
+      )
+      and on (service_name)
+      sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[30m])) > 0.2
+
+  - title: ServiceTrafficDrop
+    uid: ffft555s405j4e
+    severity: warning
+    threshold:
+      op: lt
+      value: 0.3
+    expr: |
+      (
+        sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m]))
+        /
+        clamp_min(sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[30m])), 0.001)
+      )
+      and on (service_name)
+      sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[30m])) > 0.2
+
+  - title: ServiceHighLatencyP95
+    uid: bfft555wyt1q8f
+    severity: warning
+    threshold:
+      op: gt
+      value: 1000
+      unit: ms
+    expr: |
+      histogram_quantile(
+        0.95,
+        sum by (le, service_name) (
+          rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".+"}[1m])
+        )
+      )
+      and on (service_name)
+      sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m])) > 0.2
+
+  - title: ServiceHighCPUUtilization
+    uid: efft556au8qv4c
+    severity: warning
+    threshold:
+      op: gt
+      value: 0.85
+      unit: ratio
+    expr: |
+      (
+        sum by (label_app) (
+          rate(container_cpu_usage_seconds_total{namespace="online-boutique",container!="",container!="POD",image!=""}[1m])
+          * on (namespace, pod) group_left(label_app)
+            kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+        )
+        /
+        clamp_min(
+          sum by (label_app) (
+            kube_pod_container_resource_limits{namespace="online-boutique",resource="cpu",container!="",container!="POD"}
+            * on (namespace, pod) group_left(label_app)
+              kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+          ),
+          0.001
+        )
+      )
+      and on (label_app)
+      sum by (label_app) (
+        kube_pod_container_resource_limits{namespace="online-boutique",resource="cpu",container!="",container!="POD"}
+        * on (namespace, pod) group_left(label_app)
+          kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+      ) > 0
+
+  - title: ServiceHighMemoryUtilization
+    uid: ffft556fk1udca
+    severity: warning
+    threshold:
+      op: gt
+      value: 0.9
+      unit: ratio
+    expr: |
+      (
+        sum by (label_app) (
+          container_memory_working_set_bytes{namespace="online-boutique",container!="",container!="POD",image!=""}
+          * on (namespace, pod) group_left(label_app)
+            kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+        )
+        /
+        clamp_min(
+          sum by (label_app) (
+            kube_pod_container_resource_limits{namespace="online-boutique",resource="memory",container!="",container!="POD"}
+            * on (namespace, pod) group_left(label_app)
+              kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+          ),
+          1
+        )
+      )
+      and on (label_app)
+      sum by (label_app) (
+        kube_pod_container_resource_limits{namespace="online-boutique",resource="memory",container!="",container!="POD"}
+        * on (namespace, pod) group_left(label_app)
+          kube_pod_labels{namespace="online-boutique",label_app=~".+"}
+      ) > 0
