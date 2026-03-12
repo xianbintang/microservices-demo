@@ -217,6 +217,5 @@ make -f Makefile.kind deploy-remote REGISTRY=my.registry.io CONTEXT=my-arm64-clu
 
 - `make up` 幂等：重复运行不会重建已存在的资源
 - 所有数据使用 emptyDir（临时），Pod 重启后丢失
-- SRE agent 在 kind 模式下禁用（需自定义 `sre-agent:latest` 镜像）
 - Tempo gRPC streaming 已禁用（Tempo 2.5.0 不支持 `/api/search/stream`）
 - 调整负载：`make -f Makefile.kind patch-loadgenerator LOAD_USERS=20`

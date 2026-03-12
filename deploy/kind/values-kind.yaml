@@ -20,9 +20,6 @@ selfHostedObservability:
 volcengineAPM:
   enabled: false
 
-sreAgent:
-  create: false
-
 frontend:
   externalService: false
   platform: local

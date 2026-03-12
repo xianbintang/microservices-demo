@@ -418,6 +418,5 @@ deploy-remote:
 	  --set images.repository=$(REGISTRY) \
 	  --set selfHostedObservability.enabled=true \
 	  --set volcengineAPM.enabled=false \
-	  --set sreAgent.create=false \
 	  --timeout 10m --wait
 	@echo "✓ Remote deploy complete ($(REMOTE_PLATFORM) images → $(REGISTRY))"
