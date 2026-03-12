@@ -1,5 +1,5 @@
 ---
-description: 一键部署 Online Boutique + kube-prometheus-stack（Prometheus + Promtail）到本地 kind 集群或任意远端 K8s 集群。自动检测 arm64/amd64 环境，arm64 从源码构建原生镜像，amd64 拉取 Google 预构建镜像。用法：/kind-deploy [local|down|remote REGISTRY=xxx [CONTEXT=yyy]]
+description: 一键部署 Online Boutique + kube-prometheus-stack（Prometheus）到本地 kind 集群。自动检测 arm64/amd64 环境，arm64 从源码构建原生镜像，amd64 拉取 Google 预构建镜像。用法：/kind-deploy [local|down]
 ---
 
 ## 任务
@@ -10,7 +10,6 @@ description: 一键部署 Online Boutique + kube-prometheus-stack（Prometheus +
 
 - 无参数 / `local`：本地 kind 集群完整部署（自动检测 arm64/amd64）
 - `down`：销毁本地 kind 集群和 registry
-- `remote REGISTRY=xxx [CONTEXT=yyy]`：部署到远端 K8s 集群
 
 ---
 
@@ -102,15 +101,15 @@ make -f Makefile.kind prepare-images
 
 **arm64 说明：** cartservice 保留 amd64（Grpc.Tools 2.76.0 arm64 protoc 有 SIGSEGV bug）；redis/busybox/otelcol 拉取公共多架构镜像。
 
-### 4. 部署监控组件（kube-prometheus-stack + Promtail）
+### 4. 部署监控组件（kube-prometheus-stack）
 
 ```bash
 make -f Makefile.kind deploy-monitoring
 ```
 
-部署：kube-prometheus-stack → Promtail（均使用公共多架构镜像，containerd 自动选对应架构）
+部署：kube-prometheus-stack（使用公共多架构镜像，containerd 自动选对应架构）
 
-**说明：** Grafana、Loki、Tempo、Alertmanager 运行在远端 Docker 栈（`47.83.217.162`），与 kind 集群部署解耦。kind 本地只运行 Prometheus（负责 k8s 指标采集 + remote_write 到远端）和 Promtail（负责容器日志采集 + 推送到远端 Loki）。
+**说明：** Grafana、Loki、Tempo、Alertmanager 运行在远端 Docker 栈（`47.83.217.162`），与 kind 集群部署解耦。kind 本地只运行 Prometheus（负责 k8s 指标采集 + remote_write 到远端）。
 
 ### 5. 部署 Online Boutique 微服务
 
@@ -172,30 +171,6 @@ make -f Makefile.kind down
 ```
 
 销毁 kind 集群 `online-boutique`、本地 registry `kind-registry`，释放端口转发进程。
-
----
-
-## remote 模式
-
-从 `$ARGUMENTS` 中解析 `REGISTRY=xxx` 和可选的 `CONTEXT=xxx`，然后执行：
-
-```bash
-make -f Makefile.kind deploy-remote REGISTRY=<value> [CONTEXT=<value>]
-```
-
-**自动流程：**
-1. 自动检测目标集群 node 架构（`kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}'`）
-2. 根据检测结果构建对应架构镜像（arm64 or amd64），推送到 REGISTRY
-3. 部署监控组件 + Online Boutique 应用
-
-**示例：**
-```bash
-# 部署到当前 context 的集群（自动检测架构）
-make -f Makefile.kind deploy-remote REGISTRY=my.registry.io
-
-# 指定 context（arm64 集群）
-make -f Makefile.kind deploy-remote REGISTRY=my.registry.io CONTEXT=my-arm64-cluster
-```
 
 ---
 
