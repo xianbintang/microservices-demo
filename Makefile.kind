@@ -236,8 +236,10 @@ push-base-images:
 	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/opentelemetry-collector-contrib:0.144.0
 
 ## ── Monitoring stack ──────────────────────────────────────────
-# Kind cluster only runs Prometheus (collector mode) with remoteWrite to
-# remote Docker Prometheus. Grafana/AlertManager/Loki/Tempo run remotely.
+# Keep this in local kind even when Grafana/Loki/Tempo are remote:
+# - local Prometheus scrapes cluster/node metrics, then remote_write to remote Prometheus
+# - local Promtail ships container logs to remote Loki
+# Grafana/AlertManager/Loki/Tempo run remotely.
 deploy-monitoring:
 	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
 	@echo "Deploying kube-prometheus-stack (Prometheus only, Grafana/AlertManager disabled)..."
@@ -315,29 +317,15 @@ _ensure-cluster:
 port-forward:
 	@$(MAKE) -f Makefile.kind _ensure-cluster
 	@$(MAKE) -f Makefile.kind _free-port PORT=8080
-	@$(MAKE) -f Makefile.kind _free-port PORT=3000
-	@pkill -f "grafana-port-forward-loop" 2>/dev/null || true
-	@GRAFANA_POD=""; \
-	for i in 1 2 3; do \
-	  GRAFANA_POD=$$(kubectl get pod -n $(MONITORING_NS) -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-	  [ -n "$$GRAFANA_POD" ] && break; \
-	  echo "✱ Waiting for Grafana pod..."; \
-	  sleep 2; \
-	done; \
-	if [ -z "$$GRAFANA_POD" ]; then \
-	  echo "✱ Grafana pod not found or cluster unreachable"; \
-	  exit 1; \
-	fi; \
-	nohup bash -c 'while true; do kubectl port-forward -n $(MONITORING_NS) svc/kube-prometheus-stack-grafana 3000:80; sleep 1; done' >/tmp/grafana-port-forward.log 2>&1 &
 	@nohup kubectl port-forward -n $(DEPLOY_NS) svc/frontend 8080:80 >/tmp/frontend-port-forward.log 2>&1 &
 	@sleep 2
-	@if ! curl -sS -o /dev/null --max-time 3 http://127.0.0.1:3000/login; then \
-	  echo "✱ Grafana port-forward not ready, check /tmp/grafana-port-forward.log"; \
+	@if ! curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8080/; then \
+	  echo "✱ Frontend port-forward not ready, check /tmp/frontend-port-forward.log"; \
 	fi
 	@echo ""
 	@echo "════════════════════════════════════════════════"
 	@echo "  Frontend : http://localhost:8080"
-	@echo "  Grafana  : http://localhost:3000  (admin/admin)"
+	@echo "  Grafana  : http://47.83.217.162:3000  (admin/admin)"
 	@echo "════════════════════════════════════════════════"
 
 ## ── Pod status ────────────────────────────────────────────────
