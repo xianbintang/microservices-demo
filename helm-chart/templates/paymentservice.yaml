@@ -81,14 +81,6 @@ spec:
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.paymentService.name }}"
         {{- end }}
-        {{- if .Values.volcengineAPM.enabled }}
-        - name: COLLECTOR_SERVICE_ADDR
-          value: "otel-collector-volc:4317"
-        - name: OTEL_SERVICE_NAME
-          value: "{{ .Values.paymentService.name }}"
-        - name: ENABLE_TRACING
-          value: "1"
-        {{- end }}
         {{- if .Values.selfHostedObservability.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.selfHostedObservability.collectorName }}:4317"
@@ -97,7 +89,7 @@ spec:
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}
-        {{- if and .Values.googleCloudOperations.tracing (not .Values.volcengineAPM.enabled) }}
+        {{- if .Values.googleCloudOperations.tracing }}
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}

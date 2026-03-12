@@ -14,7 +14,6 @@
 
 # 自建可观测性栈 OpenTelemetry Collector
 # 用于收集微服务的 Traces、Metrics、Logs，并导出到自建后端
-# 与 volcengineAPM 互斥，或双写用于验证
 
 {{- if .Values.selfHostedObservability.enabled }}
 {{- if .Values.serviceAccounts.create }}

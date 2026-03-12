@@ -47,25 +47,12 @@ opentelemetryCollector:
   # Specifies the project id for the otel collector. If set as "PROJECT_ID" (default value), an initContainer will automatically retrieve the project id value from the metadata server.
   projectId: "PROJECT_ID"
 
-# 火山引擎 APM Plus 配置
-volcengineAPM:
-  enabled: false
-  # APM Plus OTLP 接入点
-  endpoint: "apmplus-cn-shanghai.volces.com:4317"
-  # AppKey 从火山引擎 APM Plus 控制台获取
-  appKey: ""
-  # 是否启用压缩
-  compression: gzip
-  # 是否启用 TLS (开发环境可设为 false)
-  insecure: true
-
 googleCloudOperations:
   profiler: false
   tracing: false
   metrics: false
 
 # 自建可观测性栈配置
-# 与 volcengineAPM 互斥，或双写用于验证
 selfHostedObservability:
   enabled: false
   # 自建 OTEL Collector 名称

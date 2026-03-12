@@ -17,9 +17,6 @@ selfHostedObservability:
   loki:
     otlpEndpoint: "http://47.83.217.162:3100/otlp"
 
-volcengineAPM:
-  enabled: false
-
 frontend:
   externalService: false
   platform: local
