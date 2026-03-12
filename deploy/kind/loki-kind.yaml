@@ -1,7 +1,0 @@
-# Use chart default Loki image (3.6.5) — matches chart-generated config
-loki:
-  image:
-    registry: docker.io
-    repository: grafana/loki
-    tag: ""
-imagePullSecrets: []

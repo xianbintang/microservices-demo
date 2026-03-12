@@ -1,6 +1,0 @@
-# Use chart default Tempo image (public registry)
-tempo:
-  registry: docker.io
-  repository: grafana/tempo
-  tag: ""
-  pullSecrets: []

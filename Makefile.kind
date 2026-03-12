@@ -73,13 +73,12 @@ BUILD_SERVICES := frontend checkoutservice shippingservice productcatalogservice
 # Registry path prefix for image push
 # Local kind:  push to localhost:5001/google-samples/microservices-demo/<svc>
 #              containerd mirror redirects pulls from Google registry to this path
-# Remote:      overridden to REGISTRY (passed via deploy-remote)
 # ──────────────────────────────────────────────────────────────
 PUSH_REGISTRY ?= $(LOCAL_REGISTRY)/google-samples/microservices-demo
 
 .PHONY: all up down check-prereqs create-registry create-cluster configure-mirror \
         prepare-images pull-images build-images push-base-images \
-        deploy-monitoring deploy-app port-forward status deploy-remote
+        deploy-monitoring deploy-app port-forward status
 
 all: up  ## Alias for 'up'
 
@@ -237,33 +236,17 @@ push-base-images:
 	  $(DOCKER) push $(PUSH_FLAGS) $(PUSH_REGISTRY)/opentelemetry-collector-contrib:0.144.0
 
 ## ── Monitoring stack ──────────────────────────────────────────
+# Kind cluster only runs Prometheus (collector mode) with remoteWrite to
+# remote Docker Prometheus. Grafana/AlertManager/Loki/Tempo run remotely.
 deploy-monitoring:
 	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl apply -f deploy/monitoring/dashboards/grafana-dashboards-configmap.yaml \
-	  -n $(MONITORING_NS)
-	@echo "Deploying kube-prometheus-stack..."
+	@echo "Deploying kube-prometheus-stack (Prometheus only, Grafana/AlertManager disabled)..."
 	@helm upgrade --install kube-prometheus-stack \
 	  prometheus-community/kube-prometheus-stack \
 	  -n $(MONITORING_NS) \
-	  -f deploy/monitoring/kube-prometheus-stack-values.yaml \
 	  -f deploy/kind/kube-prometheus-stack-kind.yaml \
 	  --timeout 10m --wait
-	@echo "Deploying Loki..."
-	@helm upgrade --install loki grafana/loki -n $(MONITORING_NS) \
-	  -f deploy/monitoring/loki-values.yaml \
-	  -f deploy/kind/loki-kind.yaml \
-	  --timeout 5m --wait
-	@echo "Deploying Tempo..."
-	@helm upgrade --install tempo grafana/tempo -n $(MONITORING_NS) \
-	  -f deploy/monitoring/tempo-values.yaml \
-	  -f deploy/kind/tempo-kind.yaml \
-	  --timeout 5m --wait
-	@echo "Deploying Promtail..."
-	@helm upgrade --install promtail grafana/promtail -n $(MONITORING_NS) \
-	  -f deploy/monitoring/promtail-values.yaml \
-	  -f deploy/kind/promtail-kind.yaml \
-	  --timeout 5m
-	@echo "✓ Monitoring stack deployed"
+	@echo "✓ Monitoring stack deployed (Prometheus → remoteWrite to 47.83.217.162:9090)"
 
 ## ── Online Boutique app ───────────────────────────────────────
 deploy-app:
@@ -372,51 +355,3 @@ down:
 	@$(KIND) delete cluster --name $(CLUSTER_NAME) 2>/dev/null || true
 	@$(DOCKER) rm -f $(KIND_REGISTRY_NAME) 2>/dev/null || true
 	@echo "✓ Cluster and registry destroyed"
-
-## ── Remote K8s deployment ─────────────────────────────────────
-# Detects cluster node architecture automatically, builds the matching
-# images from source, pushes to REGISTRY, then deploys the full stack.
-#
-# Usage:
-#   make -f Makefile.kind deploy-remote REGISTRY=your.registry.com
-#   make -f Makefile.kind deploy-remote REGISTRY=your.registry.com CONTEXT=my-context
-#
-# REGISTRY must be accessible from both the build host and the cluster nodes.
-deploy-remote:
-	$(if $(REGISTRY),,$(error REGISTRY is required. Usage: make -f Makefile.kind deploy-remote REGISTRY=your.registry.com))
-	$(if $(CONTEXT),@kubectl config use-context $(CONTEXT),)
-	$(eval REMOTE_ARCH := $(shell kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null))
-	$(if $(REMOTE_ARCH),,$(error Could not detect cluster architecture. Check kubectl context and cluster connectivity.))
-	$(eval REMOTE_PLATFORM := $(if $(filter arm64 aarch64,$(REMOTE_ARCH)),linux/arm64,linux/amd64))
-	@echo "Cluster node architecture: $(REMOTE_ARCH) → building $(REMOTE_PLATFORM) images"
-	@$(MAKE) -f Makefile.kind build-images \
-	  PLATFORM=$(REMOTE_PLATFORM) \
-	  PUSH_REGISTRY=$(REGISTRY)
-	@kubectl create namespace $(DEPLOY_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl apply -f deploy/monitoring/dashboards/grafana-dashboards-configmap.yaml \
-	  -n $(MONITORING_NS)
-	@helm upgrade --install kube-prometheus-stack \
-	  prometheus-community/kube-prometheus-stack \
-	  -n $(MONITORING_NS) \
-	  -f deploy/monitoring/kube-prometheus-stack-values.yaml \
-	  --timeout 10m --wait
-	@helm upgrade --install loki grafana/loki \
-	  -n $(MONITORING_NS) \
-	  -f deploy/monitoring/loki-values.yaml \
-	  --timeout 5m --wait
-	@helm upgrade --install tempo grafana/tempo \
-	  -n $(MONITORING_NS) \
-	  -f deploy/monitoring/tempo-values.yaml \
-	  --timeout 5m --wait
-	@helm upgrade --install promtail grafana/promtail \
-	  -n $(MONITORING_NS) \
-	  -f deploy/monitoring/promtail-values.yaml \
-	  --timeout 5m --wait
-	@helm upgrade --install online-boutique helm-chart/ \
-	  -n $(DEPLOY_NS) \
-	  --set images.repository=$(REGISTRY) \
-	  --set selfHostedObservability.enabled=true \
-	  --set volcengineAPM.enabled=false \
-	  --timeout 10m --wait
-	@echo "✓ Remote deploy complete ($(REMOTE_PLATFORM) images → $(REGISTRY))"
