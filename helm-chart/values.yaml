@@ -53,21 +53,17 @@ googleCloudOperations:
   metrics: false
 
 # 自建可观测性栈配置
+# 需要在部署时指定 prometheusRemoteWrite、tempo、loki 的 endpoint
 selfHostedObservability:
   enabled: false
-  # 自建 OTEL Collector 名称
   collectorName: otel-collector-self
-  # Prometheus remote_write 地址
   prometheusRemoteWrite:
-    endpoint: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/write"
-  # Tempo OTLP 地址
+    endpoint: ""
   tempo:
-    endpoint: "tempo.monitoring.svc:4317"
+    endpoint: ""
     insecure: true
-  # Loki 地址
   loki:
-    endpoint: "http://loki.monitoring.svc:3100/loki/api/v1/push"
-  # Collector 资源配置
+    otlpEndpoint: ""
   resources:
     requests:
       cpu: 100m
