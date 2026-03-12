@@ -30,11 +30,7 @@ rules:
       value: 0.05
     expr: |
       (
-        (
-          sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m]))
-          -
-          sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+",status_code="STATUS_CODE_OK"}[1m]))
-        )
+        sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+",status_code="STATUS_CODE_ERROR"}[1m]))
         /
         clamp_min(sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[1m])), 0.001)
       )
@@ -69,16 +65,16 @@ rules:
       and on (service_name)
       sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~".+"}[30m])) > 0.2
 
-  - title: ServiceHighLatencyP95
+  - title: ServiceHighLatencyP99
     uid: bfft555wyt1q8f
     severity: warning
     threshold:
       op: gt
-      value: 1000
+      value: 200
       unit: ms
     expr: |
       histogram_quantile(
-        0.95,
+        0.99,
         sum by (le, service_name) (
           rate(traces_spanmetrics_duration_milliseconds_bucket{service_name=~".+"}[1m])
         )
@@ -91,31 +87,25 @@ rules:
     severity: warning
     threshold:
       op: gt
-      value: 0.85
+      value: 0.45
       unit: ratio
     expr: |
-      (
-        sum by (label_app) (
-          rate(container_cpu_usage_seconds_total{namespace="online-boutique",container!="",container!="POD",image!=""}[1m])
-          * on (namespace, pod) group_left(label_app)
-            kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-        )
-        /
-        clamp_min(
-          sum by (label_app) (
-            kube_pod_container_resource_limits{namespace="online-boutique",resource="cpu",container!="",container!="POD"}
-            * on (namespace, pod) group_left(label_app)
-              kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-          ),
-          0.001
+      sum by (service) (
+        label_replace(
+          rate(container_cpu_usage_seconds_total{namespace="online-boutique",container!="",container!="POD",image!="",pod=~".+-.+-.+"}[1m]),
+          "service", "$1", "pod", "^(.*)-[a-z0-9]+-[a-z0-9]+$"
         )
       )
-      and on (label_app)
-      sum by (label_app) (
-        kube_pod_container_resource_limits{namespace="online-boutique",resource="cpu",container!="",container!="POD"}
-        * on (namespace, pod) group_left(label_app)
-          kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-      ) > 0
+      /
+      clamp_min(
+        sum by (service) (
+          label_replace(
+            kube_pod_container_resource_limits{namespace="online-boutique",resource="cpu",container!="",container!="POD",pod=~".+-.+-.+"},
+            "service", "$1", "pod", "^(.*)-[a-z0-9]+-[a-z0-9]+$"
+          )
+        ),
+        0.001
+      )
 
   - title: ServiceHighMemoryUtilization
     uid: ffft556fk1udca
@@ -125,25 +115,19 @@ rules:
       value: 0.9
       unit: ratio
     expr: |
-      (
-        sum by (label_app) (
-          container_memory_working_set_bytes{namespace="online-boutique",container!="",container!="POD",image!=""}
-          * on (namespace, pod) group_left(label_app)
-            kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-        )
-        /
-        clamp_min(
-          sum by (label_app) (
-            kube_pod_container_resource_limits{namespace="online-boutique",resource="memory",container!="",container!="POD"}
-            * on (namespace, pod) group_left(label_app)
-              kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-          ),
-          1
+      sum by (service) (
+        label_replace(
+          container_memory_working_set_bytes{namespace="online-boutique",container!="",container!="POD",image!="",pod=~".+-.+-.+"},
+          "service", "$1", "pod", "^(.*)-[a-z0-9]+-[a-z0-9]+$"
         )
       )
-      and on (label_app)
-      sum by (label_app) (
-        kube_pod_container_resource_limits{namespace="online-boutique",resource="memory",container!="",container!="POD"}
-        * on (namespace, pod) group_left(label_app)
-          kube_pod_labels{namespace="online-boutique",label_app=~".+"}
-      ) > 0
+      /
+      clamp_min(
+        sum by (service) (
+          label_replace(
+            kube_pod_container_resource_limits{namespace="online-boutique",resource="memory",container!="",container!="POD",pod=~".+-.+-.+"},
+            "service", "$1", "pod", "^(.*)-[a-z0-9]+-[a-z0-9]+$"
+          )
+        ),
+        1
+      )
