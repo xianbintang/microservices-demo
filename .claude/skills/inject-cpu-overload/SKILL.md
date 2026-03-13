@@ -66,8 +66,28 @@ metadata:
 按以下顺序解析目标 Deployment：
 
 1. 先按 Service 名 `service` 查找并读取 selector。
-2. 若 Service 不存在，按 Deployment 名 `service` 直接查。
-3. 若仍不存在，对 Deployment 名做包含匹配（仅单命中可用，多命中直接失败）。
+2. 若 Service 存在：
+   - 先尝试 `kubectl get deploy -l <selector>`（单命中则直接使用）。
+   - 若 0 命中（常见于 Deployment 顶层 label 与 Pod label 不一致），改为：`selector -> Pod -> ownerReferences(ReplicaSet) -> Deployment` 反查。
+   - 若多命中（无论是 Deployment 直查还是反查）直接失败。
+3. 若 Service 不存在，按 Deployment 名 `service` 直接查。
+4. 若仍不存在，对 Deployment 名做包含匹配（仅单命中可用，多命中直接失败）。
+
+实现反查时的建议命令（仅示例，保持“单目标”校验）：
+
+```bash
+# 先拿 selector 命中的 Pod（必须至少 1 个）
+PODS=$(kubectl -n "$NAMESPACE" get pod -l "$SVC_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}')
+
+# 对每个 Pod 读取 owner kind/name
+OWNER_KIND=$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.metadata.ownerReferences[0].kind}')
+OWNER_NAME=$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.metadata.ownerReferences[0].name}')
+
+# ReplicaSet -> Deployment
+if [ "$OWNER_KIND" = "ReplicaSet" ]; then
+  DEPLOY=$(kubectl -n "$NAMESPACE" get rs "$OWNER_NAME" -o jsonpath='{.metadata.ownerReferences[?(@.kind=="Deployment")].name}')
+fi
+```
 
 最终必须得到且只得到一个 `TARGET_DEPLOYMENT`。
 
@@ -78,9 +98,12 @@ metadata:
 获取目标 Deployment 对应 Pod：
 
 ```bash
-APP_LABEL=$(kubectl -n "$NAMESPACE" get deploy "$TARGET_DEPLOYMENT" -o jsonpath='{.spec.selector.matchLabels.app}')
-TARGET_POD=$(kubectl -n "$NAMESPACE" get pod -l "app=$APP_LABEL" -o jsonpath='{.items[0].metadata.name}')
+DEPLOY_SELECTOR=$(kubectl -n "$NAMESPACE" get deploy "$TARGET_DEPLOYMENT" -o go-template='{{range $k,$v := .spec.selector.matchLabels}}{{printf "%s=%s," $k $v}}{{end}}')
+DEPLOY_SELECTOR=${DEPLOY_SELECTOR%,}
+TARGET_POD=$(kubectl -n "$NAMESPACE" get pod -l "$DEPLOY_SELECTOR" -o jsonpath='{.items[0].metadata.name}')
 ```
+
+> 说明：不要假设 selector 一定是 `app=<name>`，应通用使用 Deployment 的 `spec.selector.matchLabels`。
 
 容器选择规则（尽量避开代理容器）：
 
@@ -128,8 +151,11 @@ kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c "
     yes >/dev/null & yes >/dev/null & yes >/dev/null & yes >/dev/null & wait
   ' >/dev/shm/chaos_cpu_overload.log 2>&1 &
   CHAOS_PID=\$!
+  [ "\$CHAOS_PID" = '\$!' ] && CHAOS_PID=\$(ps -ef | grep 'CHAOS_CPU_OVERLOAD_ACTIVE' | grep -v grep | awk 'NR==1{print \$1}')
   echo \$CHAOS_PID >/dev/shm/chaos_cpu_overload.pid
 "
+
+# busybox /bin/sh 兼容注意：若发现 pid 文件被写成字面量 `$!`，需用 `ps` 回填真实 PID。
 ```
 
 ---
