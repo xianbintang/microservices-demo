@@ -1,0 +1,65 @@
+version: 1
+scenario: cpu-overload-injection
+
+correlation:
+  incident_key_template: "{namespace}:{service_or_app}:{time_bucket_10m}"
+  group_by_fields:
+    - namespace
+    - label_app
+  coalesce_window: 10m
+  note: "同一服务在时间窗内的 CPU/延迟/错误率告警归并为同一 incident"
+
+alerts:
+  - alert_id: AppCPUThrottling
+    severity: warning
+    candidate_causes:
+      - cause_id: cpu_overload_injection
+        priority: 1
+      - cause_id: traffic_hotspot_cpu_saturation
+        priority: 2
+      - cause_id: bad_release_cpu_regression
+        priority: 3
+      - cause_id: noisy_cpu_throttling_rule
+        priority: 4
+
+  - alert_id: AppHighCPUUsage
+    severity: warning
+    candidate_causes:
+      - cause_id: cpu_overload_injection
+        priority: 1
+      - cause_id: traffic_hotspot_cpu_saturation
+        priority: 2
+      - cause_id: bad_release_cpu_regression
+        priority: 3
+      - cause_id: noisy_high_cpu_usage_rule
+        priority: 4
+
+  - alert_id: AppHighLatency
+    severity: warning
+    candidate_causes:
+      - cause_id: cpu_overload_injection
+        priority: 2
+      - cause_id: downstream_dependency_issue
+        priority: 1
+
+  - alert_id: AppHighErrorRate
+    severity: critical
+    candidate_causes:
+      - cause_id: cpu_overload_injection
+        priority: 2
+      - cause_id: downstream_dependency_issue
+        priority: 1
+
+causes:
+  - cause_id: cpu_overload_injection
+    runbook: ../causes/cpu-overload-injection.md
+    default_containment_action: rollback_injected_revision
+    stoploss_level: incident
+
+execution_policy:
+  dedup_scope: incident
+  idempotency_key: "{incident_id}:{cause_id}:{action_id}"
+  require_incident_lock: true
+  allow_repeat_when:
+    - "action_result=failed"
+    - "incident_severity_escalated"

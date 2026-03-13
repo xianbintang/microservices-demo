@@ -77,7 +77,7 @@ metadata:
 
 ```bash
 # 先拿 selector 命中的 Pod（必须至少 1 个）
-PODS=$(kubectl -n "$NAMESPACE" get pod -l "$SVC_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}')
+PODS=$(kubectl -n "$NAMESPACE" get pod -l "$SVC_SELECTOR" -o jsonpath='{.items[*].metadata.name}')
 
 # 对每个 Pod 读取 owner kind/name
 OWNER_KIND=$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.metadata.ownerReferences[0].kind}')
@@ -145,18 +145,37 @@ INJECTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 在目标容器后台启动 CPU burn 进程（使用 `/dev/shm`，兼容只读根文件系统）：
 
 ```bash
-kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c "
-  nohup sh -c '
-    echo CHAOS_CPU_OVERLOAD_ACTIVE fault_id=$FAULT_ID service=$SERVICE namespace=$NAMESPACE container=$TARGET_CONTAINER;
-    yes >/dev/null & yes >/dev/null & yes >/dev/null & yes >/dev/null & wait
-  ' >/dev/shm/chaos_cpu_overload.log 2>&1 &
-  CHAOS_PID=\$!
-  [ "\$CHAOS_PID" = '\$!' ] && CHAOS_PID=\$(ps -ef | grep 'CHAOS_CPU_OVERLOAD_ACTIVE' | grep -v grep | awk 'NR==1{print \$1}')
-  echo \$CHAOS_PID >/dev/shm/chaos_cpu_overload.pid
-"
+# 推荐用 heredoc 传远端脚本，避免多层引号转义导致 sh -c 语法错误
+kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -s -- \
+  "$FAULT_ID" "$SERVICE" "$NAMESPACE" "$TARGET_CONTAINER" <<'REMOTE'
+set -eu
 
-# busybox /bin/sh 兼容注意：若发现 pid 文件被写成字面量 `$!`，需用 `ps` 回填真实 PID。
+FAULT_ID="$1"
+SERVICE="$2"
+NAMESPACE="$3"
+CONTAINER="$4"
+
+cat >/dev/shm/chaos_cpu_overload_runner.sh <<'EOF'
+#!/bin/sh
+echo "CHAOS_CPU_OVERLOAD_ACTIVE fault_id=$1 service=$2 namespace=$3 container=$4"
+yes >/dev/null & yes >/dev/null & yes >/dev/null & yes >/dev/null & wait
+EOF
+chmod +x /dev/shm/chaos_cpu_overload_runner.sh
+
+nohup /dev/shm/chaos_cpu_overload_runner.sh \
+  "$FAULT_ID" "$SERVICE" "$NAMESPACE" "$CONTAINER" \
+  >/dev/shm/chaos_cpu_overload.log 2>&1 &
+
+CHAOS_PID="$!"
+case "$CHAOS_PID" in
+  ''|*[!0-9]*) CHAOS_PID="$(ps | awk '/chaos_cpu_overload_runner.sh/ && !/awk/ {print $1; exit}')" ;;
+esac
+printf '%s\n' "$CHAOS_PID" >/dev/shm/chaos_cpu_overload.pid
+REMOTE
 ```
+
+# busybox /bin/sh 兼容注意：`ps` 输出列在不同镜像可能不一致，必要时按实际列调整 PID 提取字段。
+# 幂等检查时始终以 `kill -0 "$(cat /dev/shm/chaos_cpu_overload.pid)"` 为准。
 
 ---
 

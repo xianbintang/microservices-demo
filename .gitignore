@@ -28,3 +28,5 @@ release/wi-kubernetes-manifests.yaml
 vendor/
 .mcp.json
 .env
+deploy/docker/.grafana-auth.env
+.claude/worktrees/

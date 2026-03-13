@@ -1,0 +1,77 @@
+version: 1
+scenario: service-alerts-online
+
+source:
+  grafana_rule_group: service-alerts
+  total_rules: 6
+
+correlation:
+  incident_key_template: "{namespace}:{service_name_or_service}:{time_bucket_10m}"
+  group_by_fields:
+    - namespace
+    - service_name
+    - service
+  coalesce_window: 10m
+
+alerts:
+  - alert_id: ServiceHighCPUUtilization
+    playbook: ../alerts/service-high-cpu-utilization.md
+    candidate_causes:
+      - { cause_id: cpu_overload_injection, priority: 1 }
+      - { cause_id: traffic_hotspot_cpu_saturation, priority: 2 }
+      - { cause_id: bad_release_cpu_regression, priority: 3 }
+      - { cause_id: noisy_alert_rule, priority: 4 }
+
+  - alert_id: ServiceHighLatencyP99
+    playbook: ../alerts/service-high-latency-p99.md
+    candidate_causes:
+      - { cause_id: downstream_dependency_issue, priority: 1 }
+      - { cause_id: cpu_overload_injection, priority: 2 }
+      - { cause_id: traffic_hotspot_cpu_saturation, priority: 3 }
+      - { cause_id: bad_release_cpu_regression, priority: 4 }
+
+  - alert_id: ServiceHighErrorRate
+    playbook: ../alerts/service-high-error-rate.md
+    candidate_causes:
+      - { cause_id: downstream_dependency_issue, priority: 1 }
+      - { cause_id: cpu_overload_injection, priority: 2 }
+      - { cause_id: bad_release_cpu_regression, priority: 3 }
+      - { cause_id: traffic_hotspot_cpu_saturation, priority: 4 }
+
+  - alert_id: ServiceHighMemoryUtilization
+    playbook: ../alerts/service-high-memory-utilization.md
+    candidate_causes:
+      - { cause_id: service_memory_pressure, priority: 1 }
+      - { cause_id: bad_release_cpu_regression, priority: 2 }
+      - { cause_id: noisy_alert_rule, priority: 3 }
+
+  - alert_id: ServiceTrafficSpike
+    playbook: ../alerts/service-traffic-spike.md
+    candidate_causes:
+      - { cause_id: traffic_pattern_shift_or_upstream_issue, priority: 1 }
+      - { cause_id: traffic_hotspot_cpu_saturation, priority: 2 }
+      - { cause_id: bad_release_cpu_regression, priority: 3 }
+      - { cause_id: noisy_alert_rule, priority: 4 }
+
+  - alert_id: ServiceTrafficDrop
+    playbook: ../alerts/service-traffic-drop.md
+    candidate_causes:
+      - { cause_id: downstream_dependency_issue, priority: 1 }
+      - { cause_id: cpu_overload_injection, priority: 2 }
+      - { cause_id: traffic_pattern_shift_or_upstream_issue, priority: 3 }
+      - { cause_id: bad_release_cpu_regression, priority: 4 }
+
+causes:
+  - { cause_id: cpu_overload_injection, runbook: ../causes/cpu-overload-injection.md }
+  - { cause_id: traffic_hotspot_cpu_saturation, runbook: ../causes/cpu-saturation-by-traffic.md }
+  - { cause_id: bad_release_cpu_regression, runbook: ../causes/cpu-regression-after-release.md }
+  - { cause_id: noisy_alert_rule, runbook: ../causes/noisy-alert-rule.md }
+  - { cause_id: downstream_dependency_issue, runbook: ../causes/downstream-dependency-issue.md }
+  - { cause_id: service_memory_pressure, runbook: ../causes/service-memory-pressure.md }
+  - { cause_id: traffic_pattern_shift_or_upstream_issue, runbook: ../causes/traffic-pattern-shift-or-upstream-issue.md }
+
+execution_policy:
+  stoploss_level: incident
+  dedup_scope: incident
+  idempotency_key: "{incident_id}:{cause_id}:{action_id}"
+  require_incident_lock: true
