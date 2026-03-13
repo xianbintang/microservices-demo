@@ -100,6 +100,68 @@ kubectl -n <namespace> exec <pod-name> -c <container-name> -- sh -c 'tail -n 20 
 
 > 目标：优先恢复业务，再做复盘。
 
+### 4.0 写 Grafana annotation（建议）
+
+为确保“注入开始 → 止损完成/失败”可在同一时间线上回放，建议在止损动作**执行完成后**写 annotation（best-effort，不阻断止损主流程）。
+
+```bash
+# 建议统一环境变量
+GRAFANA_URL="${GRAFANA_URL:-http://47.83.217.162:3000}"
+GRAFANA_DASHBOARD_UID="${GRAFANA_DASHBOARD_UID:-fffrl21oam2gwa}"
+# 认证二选一：
+# 1) Token: GRAFANA_SERVICE_ACCOUNT_TOKEN 或 GRAFANA_TOKEN
+# 2) Basic Auth: GRAFANA_USER/GRAFANA_PASSWORD（或 GRAFANA_USERNAME/GRAFANA_PASSWORD）
+
+# 关联字段（按实际值填写）
+INCIDENT_ID="<incident-id>"
+ACTION_ID="<action-id>"  # delete_single_pod / rollback_injected_revision / redeploy_clean_manifest / temporary_scale_out
+SERVICE="<service>"
+NAMESPACE="<namespace>"
+# 可选：如果能拿到注入线索再传
+FAULT_ID="<fault-id-optional>"
+
+# ...执行具体止损命令...
+# 成功：
+./deploy/docker/emit-grafana-annotation.sh \
+  --event mitigation_done \
+  --incident-id "$INCIDENT_ID" \
+  --action-id "$ACTION_ID" \
+  --service "$SERVICE" \
+  --namespace "$NAMESPACE" \
+  --source high-cpu-runbook \
+  --fault-id "$FAULT_ID" \
+  --dashboard-uid "$GRAFANA_DASHBOARD_UID" \
+  || true
+
+# 失败：
+./deploy/docker/emit-grafana-annotation.sh \
+  --event mitigation_failed \
+  --incident-id "$INCIDENT_ID" \
+  --action-id "$ACTION_ID" \
+  --service "$SERVICE" \
+  --namespace "$NAMESPACE" \
+  --source high-cpu-runbook \
+  --fault-id "$FAULT_ID" \
+  --dashboard-uid "$GRAFANA_DASHBOARD_UID" \
+  || true
+```
+
+说明：
+- 公共脚本内置 mitigation 终态去重（`idempotency_key=mitigation__incident_id__action_id__service__namespace`）。
+- retry 过程不写 annotation，仅最终结果写一条（done/failed）。
+- `fault_id` 对止损是可选字段，拿不到就不传。
+
+字段约定：
+- 止损主关联键使用 `incident_id + action_id`。
+- `fault_id` 为可选增强字段，拿不到不影响写入。
+- 不再写 `mitigation_start`，仅在动作完成后写一条结果事件（done/failed）。
+
+可选：若你希望“一次止损任务严格只写一条”，可显式传入 `--idempotency-key "mitigation__${INCIDENT_ID}__${ACTION_ID}__${SERVICE}__${NAMESPACE}"`。
+
+注：公共脚本默认已按该规则自动构建 idempotency key 并去重。
+
+通过 `fault_id`（可选）可把注入与止损时间线串起来；即使缺失 `fault_id`，仍可通过 `incident_id` 完整追踪止损链路。
+
 ### 4.1 首选：删除目标 Pod（推荐）
 
 适用于以下可快速替换实例场景：

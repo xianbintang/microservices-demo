@@ -6,7 +6,7 @@ compatibility:
   claude_code: ">=1.0"
 metadata:
   author: xianb
-  version: 1.2.0
+  version: 1.3.0
   generatedBy: claude-sonnet-4-6
 ---
 
@@ -162,6 +162,24 @@ kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c "
 
 ### 步骤 5：写入 breadcrumbs（用于 oncall 回溯）
 
+在 shell 中预先定义 annotation 上报参数（可选，未配置则跳过）：
+
+```bash
+# 可通过环境变量覆盖
+GRAFANA_URL="${GRAFANA_URL:-http://47.83.217.162:3000}"
+GRAFANA_DASHBOARD_UID="${GRAFANA_DASHBOARD_UID:-fffrl21oam2gwa}"
+# 认证二选一：
+# 1) Token: GRAFANA_SERVICE_ACCOUNT_TOKEN 或 GRAFANA_TOKEN
+# 2) Basic Auth: GRAFANA_USER/GRAFANA_PASSWORD（或 GRAFANA_USERNAME/GRAFANA_PASSWORD）
+```
+
+公共能力：统一通过 `deploy/docker/emit-grafana-annotation.sh` 写 annotation。
+
+约定：annotation 失败不影响注入主流程（best-effort）。
+
+1) **Kubernetes breadcrumbs**：写 Pod/Deployment 注解。
+2) **Grafana annotation**：写 `event=inject_start` 时间线标记。
+
 对目标 Pod 写注解：
 
 ```bash
@@ -180,6 +198,22 @@ kubectl -n "$NAMESPACE" annotate pod "$TARGET_POD" \
 kubectl -n "$NAMESPACE" annotate deploy "$TARGET_DEPLOYMENT" \
   kubernetes.io/change-cause="chaos inject-cpu-overload fault_id=$FAULT_ID service=$SERVICE mode=process" \
   --overwrite
+```
+
+写 Grafana annotation（best-effort，失败仅告警不退出）：
+
+```bash
+./deploy/docker/emit-grafana-annotation.sh \
+  --event inject_start \
+  --fault-id "$FAULT_ID" \
+  --service "$SERVICE" \
+  --namespace "$NAMESPACE" \
+  --deployment "$TARGET_DEPLOYMENT" \
+  --pod "$TARGET_POD" \
+  --container "$TARGET_CONTAINER" \
+  --source inject-cpu-overload \
+  --dashboard-uid "$GRAFANA_DASHBOARD_UID" \
+  || echo "WARN: grafana annotation failed (inject_start), continue without blocking"
 ```
 
 ---
@@ -215,9 +249,10 @@ CHAOS_CPU_OVERLOAD_ACTIVE fault_id=<id> service=<svc> namespace=<ns> container=<
 - namespace: <namespace>
 - fault_id: <fault_id>
 - evidence: pid=/dev/shm/chaos_cpu_overload.pid, pod annotations=chaos.alarmkeeper.io/*, log_prefix=CHAOS_CPU_OVERLOAD_ACTIVE
+- grafana_annotation: event=inject_start (best-effort)
 
 ⚠️ 本 Skill 不提供恢复动作。
-建议止损：kubectl delete pod <target-pod> -n <namespace>
+建议止损：kubectl delete pod <target-pod> -n <namespace> / 按 runbook 执行并写 mitigation annotation（done/failed）
 ```
 
 ## 安全规则
