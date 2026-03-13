@@ -5,7 +5,7 @@ license: MIT
 compatibility:
   claude_code: ">=1.0"
 metadata:
-  author: xianb
+  author: zxx
   version: 1.3.0
   generatedBy: claude-sonnet-4-6
 ---
