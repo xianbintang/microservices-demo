@@ -144,12 +144,17 @@ kubectl -n "$NAMESPACE" delete pod "$TARGET_POD"
 
 ---
 
-### 步骤 4：删除后验证（必须执行）
+### 步骤 4：删除后验证（必须执行，失败则退出）
+
+**强约束**：此步骤失败 → 直接退出，**不写任何 annotation**。
 
 若已解析到 `TARGET_DEPLOYMENT`，执行：
 
 ```bash
-kubectl -n "$NAMESPACE" rollout status deployment/"$TARGET_DEPLOYMENT" --timeout=180s
+kubectl -n "$NAMESPACE" rollout status deployment/"$TARGET_DEPLOYMENT" --timeout=180s || {
+  echo "ERROR: Deployment rollout 失败"
+  exit 1
+}
 ```
 
 并输出当前 Pod 列表用于确认新实例是否已拉起：
@@ -161,21 +166,27 @@ kubectl -n "$NAMESPACE" get pod -l "$DEPLOY_SELECTOR" -o wide
 如果没有 deployment 上下文（仅按 pod 删除），至少执行：
 
 ```bash
-kubectl -n "$NAMESPACE" get pod "$TARGET_POD" || true
+kubectl -n "$NAMESPACE" get pod "$TARGET_POD" 2>&1 | grep -q "NotFound" || {
+  echo "WARN: Pod 仍存在（可能正在终止），但未达到预期状态"
+}
+
 kubectl -n "$NAMESPACE" get pod -o wide
 ```
 
 期望：
 - 被删除 Pod 不再存在；
-- 对应工作负载能拉起新 Pod 并趋于 Ready。
+- 对应工作负载能拉起新 Pod 并趋于 Ready；
+- **验证失败不进入步骤5**。
 
 ---
 
-### 步骤 5：写 Grafana annotation（止损成功必写）
+### 步骤 5：写 Grafana annotation（仅止损成功后执行）
+
+**前置条件**：步骤 4 验证完全通过。
 
 **规则**：
 - 删除成功 + rollout 验证通过 → **必须写** `mitigation_done` annotation
-- 删除失败或验证失败 → **不写** annotation
+- 删除失败或验证失败 → **不写** annotation（已在步骤4退出）
 - `incident_id` / `fault_id` 均为可选，缺失时不传，**但不得因此跳过 annotation**
 - annotation 写入失败不阻断主流程（best-effort）
 

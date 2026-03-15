@@ -179,7 +179,36 @@ REMOTE
 
 ---
 
-### 步骤 5：写入 breadcrumbs（用于 oncall 回溯）
+### 步骤 5：注入后校验（必须成功才继续）
+
+**强约束**：此步骤失败 → 直接退出，**不写任何 annotation**。
+
+```bash
+# 1) PID 存活验证
+kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c 'cat /dev/shm/chaos_cpu_overload.pid && kill -0 "$(cat /dev/shm/chaos_cpu_overload.pid)"' || {
+  echo "ERROR: PID 文件不存在或进程未存活"
+  exit 1
+}
+
+# 2) 注入日志标记验证
+LOG_OUTPUT=$(kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c 'tail -n 20 /dev/shm/chaos_cpu_overload.log')
+echo "$LOG_OUTPUT" | grep -q "CHAOS_CPU_OVERLOAD_ACTIVE" || {
+  echo "ERROR: 注入日志未找到 CHAOS_CPU_OVERLOAD_ACTIVE 标记"
+  exit 1
+}
+```
+
+期望日志包含：
+
+```text
+CHAOS_CPU_OVERLOAD_ACTIVE fault_id=<id> service=<svc> namespace=<ns> container=<container>
+```
+
+---
+
+### 步骤 6：写入 breadcrumbs（仅校验成功后执行）
+
+**前置条件**：步骤 5 校验完全通过。
 
 在 shell 中预先定义 annotation 上报参数（可选，未配置则跳过）：
 
@@ -233,27 +262,6 @@ kubectl -n "$NAMESPACE" annotate deploy "$TARGET_DEPLOYMENT" \
   --source inject-cpu-overload \
   --dashboard-uid "$GRAFANA_DASHBOARD_UID" \
   || echo "WARN: grafana annotation failed (inject_start), continue without blocking"
-```
-
----
-
-### 步骤 6：注入后校验
-
-```bash
-# 1) PID 存活
-kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c 'cat /dev/shm/chaos_cpu_overload.pid && kill -0 "$(cat /dev/shm/chaos_cpu_overload.pid)"'
-
-# 2) 注入日志标记
-kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -c 'tail -n 20 /dev/shm/chaos_cpu_overload.log'
-
-# 3) 注解线索
-kubectl -n "$NAMESPACE" get pod "$TARGET_POD" -o jsonpath='{.metadata.annotations.chaos\.alarmkeeper\.io/fault-id}{"\n"}{.metadata.annotations.chaos\.alarmkeeper\.io/fault-type}{"\n"}{.metadata.annotations.chaos\.alarmkeeper\.io/recovery-hint}{"\n"}'
-```
-
-期望日志包含：
-
-```text
-CHAOS_CPU_OVERLOAD_ACTIVE fault_id=<id> service=<svc> namespace=<ns> container=<container>
 ```
 
 ---
