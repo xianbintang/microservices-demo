@@ -6,7 +6,7 @@ compatibility:
   claude_code: ">=1.0"
 metadata:
   author: zxx
-  version: 1.3.0
+  version: 1.3.1
   generatedBy: claude-sonnet-4-6
 ---
 
@@ -146,7 +146,8 @@ INJECTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 ```bash
 # 推荐用 heredoc 传远端脚本，避免多层引号转义导致 sh -c 语法错误
-kubectl -n "$NAMESPACE" exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -s -- \
+# 关键：必须加 -i，确保本地 heredoc 能正确传入容器 stdin
+kubectl -n "$NAMESPACE" exec -i "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -s -- \
   "$FAULT_ID" "$SERVICE" "$NAMESPACE" "$TARGET_CONTAINER" <<'REMOTE'
 set -eu
 
@@ -157,7 +158,11 @@ CONTAINER="$4"
 
 cat >/dev/shm/chaos_cpu_overload_runner.sh <<'EOF'
 #!/bin/sh
-echo "CHAOS_CPU_OVERLOAD_ACTIVE fault_id=$1 service=$2 namespace=$3 container=$4"
+FAULT_ID="$1"
+SERVICE="$2"
+NAMESPACE="$3"
+CONTAINER="$4"
+echo "CHAOS_CPU_OVERLOAD_ACTIVE fault_id=${FAULT_ID} service=${SERVICE} namespace=${NAMESPACE} container=${CONTAINER}"
 yes >/dev/null & yes >/dev/null & yes >/dev/null & yes >/dev/null & wait
 EOF
 chmod +x /dev/shm/chaos_cpu_overload_runner.sh
@@ -288,3 +293,77 @@ kubectl -n "$NAMESPACE" annotate deploy "$TARGET_DEPLOYMENT" \
 - 多匹配时必须拒绝执行。
 - 已注入状态下必须幂等返回，禁止重复注入多个后台进程。
 - 不执行任何回滚/恢复命令。
+
+---
+
+## 常见坑与避坑指南
+
+### 1. `kubectl exec` + heredoc 必须加 `-i`
+
+**错误写法：**
+```bash
+kubectl exec "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -s -- arg1 arg2 <<'EOF'
+# 脚本内容
+EOF
+```
+
+**问题：**
+不加 `-i` 时，heredoc stdin 不会传入容器，脚本内容丢失，容器内会报 `can't open /dev/shm/chaos_cpu_overload.pid: No such file or directory` 等错误。
+
+**正确写法：**
+```bash
+kubectl exec -i "$TARGET_POD" -c "$TARGET_CONTAINER" -- sh -s -- arg1 arg2 <<'EOF'
+# 脚本内容
+EOF
+```
+
+**原因：**
+`kubectl exec` 默认不绑定 stdin，需要显式 `-i` 才能把本地 heredoc 内容传入容器。
+
+---
+
+### 2. 日志字段为空或残缺
+
+**错误写法（嵌套 heredoc 里直接用 `$1`）：**
+```bash
+cat >/dev/shm/runner.sh <<'EOF'
+#!/bin/sh
+echo "fault_id=$1 service=$2"  # 这里的 $1 $2 是 runner.sh 的参数，不是外层传入的
+EOF
+```
+
+**问题：**
+嵌套 heredoc 里变量作用域混淆，导致日志里关键字段为空。
+
+**正确写法：**
+```bash
+FAULT_ID="$1"
+SERVICE="$2"
+cat >/dev/shm/runner.sh <<EOF
+#!/bin/sh
+echo "fault_id=${FAULT_ID} service=${SERVICE}"
+EOF
+```
+
+**建议：**
+在每一层 heredoc 里显式传递变量，避免作用域混淆。
+
+---
+
+### 3. 幂等检查要基于 PID 文件，而非进程名
+
+**错误写法：**
+```bash
+kubectl exec ... -- ps | grep chaos_cpu_overload_runner
+```
+
+**问题：**
+`ps` 输出格式在不同镜像（busybox、alpine、debian）不一致，且 `ps` 可能不可用或列顺序不同。
+
+**正确写法：**
+```bash
+kubectl exec ... -- sh -c 'kill -0 "$(cat /dev/shm/chaos_cpu_overload.pid)" 2>/dev/null'
+```
+
+**原因：**
+PID 文件是唯一的、跨平台兼容的幂等标记。

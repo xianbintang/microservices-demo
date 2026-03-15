@@ -1,0 +1,8 @@
+{
+    "receiver": "PrometheusAlert-Feishu",
+    "group_by": [
+        "grafana_folder",
+        "alertname"
+    ],
+    "provenance": "api"
+}
