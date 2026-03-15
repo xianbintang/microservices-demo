@@ -30,3 +30,4 @@ vendor/
 .env
 deploy/docker/.grafana-auth.env
 .claude/worktrees/
+

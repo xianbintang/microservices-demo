@@ -27,6 +27,12 @@ RUN ./gradlew installDist
 
 FROM eclipse-temurin:25.0.1_8-jre-alpine@sha256:9c65fe190cb22ba92f50b8d29a749d0f1cfb2437e09fe5fbf9ff927c45fc6e99
 
+# Download OpenTelemetry Java Agent
+RUN apk add --no-cache wget && \
+    wget -O /opt/opentelemetry-javaagent.jar \
+    https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.10.0/opentelemetry-javaagent.jar && \
+    apk del wget
+
 # @TODO: https://github.com/GoogleCloudPlatform/microservices-demo/issues/2517
 # Download Stackdriver Profiler Java agent
 # RUN mkdir -p /opt/cprof && \
@@ -38,4 +44,15 @@ WORKDIR /app
 COPY --from=builder /app .
 
 EXPOSE 9555
-ENTRYPOINT ["/app/build/install/hipstershop/bin/AdService"]
+
+# Conditionally enable OpenTelemetry Java Agent based on ENABLE_TRACING env var
+ENTRYPOINT ["sh", "-c", "if [ \"$ENABLE_TRACING\" = \"1\" ]; then \
+    java -javaagent:/opt/opentelemetry-javaagent.jar \
+         -Dotel.service.name=adservice \
+         -Dotel.exporter.otlp.endpoint=$COLLECTOR_SERVICE_ADDR \
+         -Dotel.traces.exporter=otlp \
+         -Dotel.metrics.exporter=none \
+         -jar /app/build/install/hipstershop/lib/AdService.jar; \
+    else \
+        /app/build/install/hipstershop/bin/AdService; \
+    fi"]

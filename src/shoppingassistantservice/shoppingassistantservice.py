@@ -24,6 +24,15 @@ from flask import Flask, request
 
 from langchain_google_alloydb_pg import AlloyDBEngine, AlloyDBVectorStore
 
+# OpenTelemetry imports
+if os.environ.get("ENABLE_TRACING") == "1":
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.flask import FlaskInstrumentor
+    from opentelemetry.sdk.resources import Resource
+
 PROJECT_ID = os.environ["PROJECT_ID"]
 REGION = os.environ["REGION"]
 ALLOYDB_DATABASE_NAME = os.environ["ALLOYDB_DATABASE_NAME"]
@@ -60,7 +69,32 @@ vectorstore = AlloyDBVectorStore.create_sync(
 )
 
 def create_app():
+    # OpenTelemetry tracing initialization
+    if os.environ.get("ENABLE_TRACING") == "1":
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.flask import FlaskInstrumentor
+        from opentelemetry.sdk.resources import Resource
+
+        print("Initializing OpenTelemetry tracing...")
+        resource = Resource.create({"service.name": "shoppingassistantservice"})
+        trace.set_tracer_provider(TracerProvider(resource=resource))
+
+        otlp_endpoint = os.environ.get("COLLECTOR_SERVICE_ADDR", "localhost:4317")
+        trace.get_tracer_provider().add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
+        )
+        print(f"OpenTelemetry tracing initialized (endpoint: {otlp_endpoint})")
+
     app = Flask(__name__)
+
+    # Instrument Flask app
+    if os.environ.get("ENABLE_TRACING") == "1":
+        from opentelemetry.instrumentation.flask import FlaskInstrumentor
+        FlaskInstrumentor().instrument_app(app)
+        print("Flask instrumentation enabled")
 
     @app.route("/", methods=['POST'])
     def talkToGemini():
