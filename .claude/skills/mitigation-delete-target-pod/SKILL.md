@@ -68,8 +68,8 @@ EOF
 - `pod`：可选。显式指定要删除的 Pod 名称（最高优先级）。
 - `service`：可选，默认 `redis-cart`。
 - `namespace`：可选，默认 `online-boutique`。
-- `incident_id`：可选。若提供，删除完成后可写 Grafana `mitigation_done/failed` annotation。
-- `fault_id`：可选。用于串联注入与止损时间线。
+- `incident_id`：可选。仅用于关联事件上下文；缺失时也必须写 `mitigation_done` annotation。
+- `fault_id`：可选。用于串联注入与止损时间线；缺失时也不影响 annotation 写入。
 
 参数优先级：
 1. 若提供 `pod`，以 `pod` 为准；
@@ -176,20 +176,25 @@ kubectl -n "$NAMESPACE" get pod -o wide
 **规则**：
 - 删除成功 + rollout 验证通过 → **必须写** `mitigation_done` annotation
 - 删除失败或验证失败 → **不写** annotation
-- `incident_id` / `fault_id` 均为可选，缺失时不传
+- `incident_id` / `fault_id` 均为可选，缺失时不传，**但不得因此跳过 annotation**
 - annotation 写入失败不阻断主流程（best-effort）
 
 实现：
 
 ```bash
-# 成功时写 mitigation_done（incident_id/fault_id 可选）
+# 成功时写 mitigation_done（不依赖 incident_id/fault_id，缺失时照常写）
+INCIDENT_ARG=""
+FAULT_ARG=""
+[ -n "$INCIDENT_ID" ] && INCIDENT_ARG="--incident-id $INCIDENT_ID"
+[ -n "$FAULT_ID" ] && FAULT_ARG="--fault-id $FAULT_ID"
+
 ./deploy/docker/emit-grafana-annotation.sh \
   --event mitigation_done \
   --action-id "delete_single_pod" \
   --service "$SERVICE" \
   --namespace "$NAMESPACE" \
-  --incident-id "$INCIDENT_ID" \
-  --fault-id "$FAULT_ID" \
+  $INCIDENT_ARG \
+  $FAULT_ARG \
   --pod "$TARGET_POD" \
   --deployment "$TARGET_DEPLOYMENT" \
   --source delete-target-pod \
@@ -212,7 +217,7 @@ kubectl -n "$NAMESPACE" get pod -o wide
 - target deployment: <deployment-or-N/A>
 - deleted pod: <pod>
 - verification: rollout_status=ok / replacement_pod_ready=observed
-- grafana_annotation: mitigation_done (best-effort, only when incident_id provided)
+- grafana_annotation: mitigation_done (best-effort, incident_id/fault_id optional, always attempt)
 ```
 
 失败：
