@@ -1,18 +1,5 @@
 [
     {
-        "uid": "bfg3xoq5r2znka",
-        "name": "PrometheusAlert-Feishu",
-        "type": "webhook",
-        "settings": {
-            "authorization_credentials": "[REDACTED]",
-            "httpMethod": "POST",
-            "password": "[REDACTED]",
-            "url": "http://prometheus-alert:8080/prometheusalert?type=fs&tpl=grafana-fs"
-        },
-        "disableResolveMessage": false,
-        "provenance": "api"
-    },
-    {
         "uid": "bfg3x16d7q3nke",
         "name": "SendtoFeishu",
         "type": "webhook",

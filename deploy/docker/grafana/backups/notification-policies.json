@@ -1,5 +1,5 @@
 {
-    "receiver": "PrometheusAlert-Feishu",
+    "receiver": "SendtoFeishu",
     "group_by": [
         "grafana_folder",
         "alertname"

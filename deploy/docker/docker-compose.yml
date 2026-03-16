@@ -6,7 +6,6 @@ networks:
 
 volumes:
   prometheus-data:
-  alertmanager-data:
   grafana-data:
   loki-data:
   tempo-data:
@@ -28,21 +27,6 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
-    networks:
-      - obs-net
-
-  alertmanager:
-    image: prom/alertmanager:v0.28.1
-    container_name: alertmanager
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
-    volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager-data:/alertmanager
-    ports:
-      - "9093:9093"
     networks:
       - obs-net
 
@@ -71,17 +55,6 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
       - "3200:3200"   # Tempo HTTP API
-    networks:
-      - obs-net
-
-  prometheus-alert:
-    image: feiyu563/prometheus-alert:v4.9.1
-    container_name: prometheus-alert
-    restart: unless-stopped
-    volumes:
-      - ./prometheus-alert/app.conf:/app/conf/app.conf:ro
-    ports:
-      - "8080:8080"
     networks:
       - obs-net
 

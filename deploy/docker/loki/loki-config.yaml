@@ -33,9 +33,6 @@ schema_config:
         prefix: index_
         period: 24h
 
-ruler:
-  alertmanager_url: http://alertmanager:9093
-
 limits_config:
   retention_period: 744h
   max_query_series: 10000
