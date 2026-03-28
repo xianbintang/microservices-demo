@@ -12,6 +12,7 @@ deploy:
 	mkdir -p ./alarm-service
 	cp ../../src/alarm-service/server.py ./alarm-service/server.py
 	cp ../../src/alarm-service/Dockerfile ./alarm-service/Dockerfile
+	cp ../../src/alarm-service/requirements.txt ./alarm-service/requirements.txt
 	cp ../../.trae/skills/feishu-messenger/feishu_api.py ./alarm-service/feishu_api.py
 	cp ../../.env ./alarm-service/.env
 	@echo "==> 部署前自动备份 Grafana（如果正在运行）..."

@@ -3,31 +3,30 @@
 alarm-service — 报警消息中转与监听服务
 
 功能：
-  1. POST /webhook/grafana  — 接收 Grafana Alerting Webhook，通过飞书 App Bot 发送卡片消息
-  2. POST /webhook/feishu   — 接收飞书事件订阅回调，监听群消息并自动回复
-  3. GET  /health           — 健康检查
+  1. POST /webhook/grafana  — 接收 OnCall Outgoing Webhook，通过飞书 App Bot 发送卡片消息
+  2. 飞书长连接 (WebSocket) — 接收卡片交互回调 (card.action.trigger)，执行 ACK/Silence/Resolve
+  3. 飞书长连接 (WebSocket) — 接收群消息事件 (im.message.receive_v1)，自动回复
+  4. GET  /health           — 健康检查
 
 架构：
-  Grafana 告警规则 → Webhook Contact Point → alarm-service → 飞书 App Bot 卡片消息
-  飞书群消息 → 飞书事件订阅 → alarm-service → 同一个 App Bot 回复消息
+  Grafana 告警规则 → OnCall → Escalation Chain → Outgoing Webhook → alarm-service → 飞书 App Bot 卡片消息
+  飞书卡片按钮点击 → 飞书 WebSocket 长连接 → alarm-service → OnCall API（ACK/Silence/Resolve）
 
-依赖：仅使用 Python 标准库，无需安装第三方包。
-飞书 API 调用复用项目中已有的 feishu_api.py 模块。
+依赖：lark-oapi (飞书 SDK，用于 WebSocket 长连接)、feishu_api.py (发消息)
 """
 
-import hashlib
-import hmac
+import base64
 import json
 import logging
 import os
 import sys
+import threading
 import time
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional
 
-# --- 加载 feishu_api 模块 ---
-# Docker 容器中 feishu_api.py 在同目录；本地开发时在 .trae/skills/feishu-messenger/
 try:
     import feishu_api
 except ImportError:
@@ -37,11 +36,22 @@ except ImportError:
         sys.path.insert(0, str(_FEISHU_API_DIR))
     import feishu_api
 
-# --- 配置 ---
+import lark_oapi as lark
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
+
 PORT = int(os.environ.get("ALARM_SERVICE_PORT", "9095"))
-FEISHU_VERIFICATION_TOKEN = os.environ.get("FEISHU_VERIFICATION_TOKEN", "")
-FEISHU_ENCRYPT_KEY = os.environ.get("FEISHU_ENCRYPT_KEY", "")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000")
+GRAFANA_PUBLIC_URL = os.environ.get("GRAFANA_PUBLIC_URL", "http://47.83.217.162:3000")
+GRAFANA_USER = os.environ.get("GRAFANA_USER", "admin")
+GRAFANA_PASSWORD = os.environ.get("GRAFANA_PASSWORD", "admin")
+
+FEISHU_APP_ID = os.environ.get("app_id", "")
+FEISHU_APP_SECRET = os.environ.get("app_secret", "")
 
 # --- 日志 ---
 logging.basicConfig(
@@ -51,14 +61,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alarm-service")
 
-# --- 告警消息 ID 缓存（message_id -> alert 信息映射），用于回复时关联告警上下文 ---
-# 简单内存缓存，最多保留 1000 条，生产环境应换为 Redis
+# --- 告警消息缓存（message_id -> alert 信息映射）---
 _alert_message_cache: dict[str, dict] = {}
 _CACHE_MAX_SIZE = 1000
 
 
 def _cache_alert_message(message_id: str, alert_info: dict):
-    """缓存告警消息 ID 与告警详情的映射关系"""
     if len(_alert_message_cache) >= _CACHE_MAX_SIZE:
         oldest_key = next(iter(_alert_message_cache))
         del _alert_message_cache[oldest_key]
@@ -66,11 +74,51 @@ def _cache_alert_message(message_id: str, alert_info: dict):
 
 
 # ============================================================
+# OnCall API 工具函数
+# ============================================================
+
+def _format_delay(seconds: int) -> str:
+    """将秒数转换为人类可读的时间文本"""
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 60}min"
+
+
+def _oncall_api(method: str, path: str, body: dict = None) -> dict:
+    """
+    通过 Grafana plugin proxy 调用 OnCall API。
+    path 示例: "alertgroups/XXXX/acknowledge/"
+    """
+    url = f"{GRAFANA_URL}/api/plugins/grafana-oncall-app/resources/{path}"
+    credentials = base64.b64encode(f"{GRAFANA_USER}:{GRAFANA_PASSWORD}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Content-Type": "application/json",
+    }
+    data = json.dumps(body).encode() if body else None
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp_body = resp.read().decode("utf-8")
+            return json.loads(resp_body) if resp_body.strip() else {}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        logger.error(
+            "OnCall API 调用失败: method=%s, path=%s, status=%d, body=%s",
+            method, path, e.code, error_body[:500]
+        )
+        raise
+    except Exception as e:
+        logger.error("OnCall API 请求异常: method=%s, path=%s, error=%s", method, path, e)
+        raise
+
+
+# ============================================================
 # 飞书卡片构建
 # ============================================================
 
 def _severity_color(status: str, severity: str = "") -> str:
-    """根据告警状态和严重程度返回卡片颜色"""
     if status == "resolved":
         return "green"
     if severity == "critical":
@@ -86,12 +134,17 @@ def _severity_emoji(status: str, severity: str = "") -> str:
     return "🟡"
 
 
-def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
-    """
-    将 Grafana Alerting 的单条告警构建为飞书卡片 JSON。
+SILENCE_PRESETS = [
+    {"label": "30m", "seconds": 1800},
+    {"label": "2h", "seconds": 7200},
+]
 
-    Grafana Webhook payload 格式参考：
-    https://grafana.com/docs/grafana/latest/alerting/configure-notifications/manage-contact-points/integrations/webhook-notifier/
+
+def build_alert_card(alert: dict, common_labels: dict = None,
+                     alert_group_id: str = "", oncall_meta: dict = None) -> dict:
+    """
+    将单条告警构建为飞书交互卡片 JSON。
+    卡片包含：告警基本信息、Alert Group ID、查看详情链接、ACK / Silence / Resolve 操作按钮。
     """
     status = alert.get("status", "firing")
     labels = alert.get("labels", {})
@@ -102,10 +155,6 @@ def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
     service = labels.get("service_name", labels.get("service", "unknown"))
     summary = annotations.get("summary", "")
     description = annotations.get("description", "")
-    grafana_url = alert.get("generatorURL", "")
-    silence_url = alert.get("silenceURL", "")
-    dashboard_url = alert.get("dashboardURL", "")
-    panel_url = alert.get("panelURL", "")
 
     status_text = "已恢复" if status == "resolved" else "告警触发"
     emoji = _severity_emoji(status, severity)
@@ -113,44 +162,37 @@ def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
 
     header = {
         "template": color,
-        "title": {
-            "tag": "plain_text",
-            "content": f"{emoji} [{status_text}] {alert_name}"
-        }
+        "title": {"tag": "plain_text", "content": f"{emoji} [{status_text}] {alert_name}"},
     }
 
     elements = []
 
-    # 基本信息区域
+    # 基本信息：两列布局
     info_fields = []
     if service and service != "unknown":
-        info_fields.append({"tag": "markdown", "content": f"**服务**: {service}"})
+        info_fields.append(f"**服务**: {service}")
     if severity:
-        info_fields.append({"tag": "markdown", "content": f"**级别**: {severity}"})
+        info_fields.append(f"**级别**: {severity}")
 
     time_str = alert.get("startsAt", "")
     if status == "resolved":
         time_str = alert.get("endsAt", time_str)
     if time_str:
         display_time = time_str.replace("T", " ").split(".")[0].replace("Z", " UTC")
-        info_fields.append({"tag": "markdown", "content": f"**时间**: {display_time}"})
+        info_fields.append(f"**时间**: {display_time}")
 
-    if info_fields:
-        elements.append({
-            "tag": "column_set",
-            "flex_mode": "bisect",
-            "columns": [
-                {"tag": "column", "width": "weighted", "weight": 1, "elements": [f]} for f in info_fields[:2]
-            ]
-        })
-        if len(info_fields) > 2:
-            elements.append({
-                "tag": "column_set",
-                "flex_mode": "bisect",
-                "columns": [
-                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [f]} for f in info_fields[2:]
-                ]
+    if alert_group_id:
+        info_fields.append(f"**Alert Group**: `{alert_group_id}`")
+
+    # 每行两个字段
+    for i in range(0, len(info_fields), 2):
+        cols = []
+        for field_text in info_fields[i:i + 2]:
+            cols.append({
+                "tag": "column", "width": "weighted", "weight": 1,
+                "elements": [{"tag": "markdown", "content": field_text}],
             })
+        elements.append({"tag": "column_set", "flex_mode": "bisect", "columns": cols})
 
     elements.append({"tag": "hr"})
 
@@ -159,7 +201,6 @@ def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
     if description:
         elements.append({"tag": "markdown", "content": f"**详情**: {description}"})
 
-    # 标签展示
     extra_labels = {k: v for k, v in labels.items()
                     if k not in ("alertname", "severity", "service_name", "service", "grafana_folder")}
     if extra_labels:
@@ -168,32 +209,54 @@ def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
 
     elements.append({"tag": "hr"})
 
-    # 操作按钮
-    actions = []
-    if grafana_url:
-        actions.append({
+    # 操作按钮行 1：查看详情 / ACK / Resolve
+    # 必须使用 behaviors 字段，因为飞书后台订阅的是新版 card.action.trigger 回调
+    # value 字段会走旧版 card.action.trigger_v1，不会推送到长连接
+    actions_row = []
+
+    if alert_group_id:
+        detail_url = (
+            f"{GRAFANA_PUBLIC_URL}/a/grafana-oncall-app/alert-groups/{alert_group_id}"
+        )
+        actions_row.append({
             "tag": "button",
-            "text": {"tag": "plain_text", "content": "查看告警"},
+            "text": {"tag": "plain_text", "content": "📋 查看详情"},
             "type": "primary",
-            "url": grafana_url
-        })
-    if silence_url:
-        actions.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "一键静默"},
-            "type": "default",
-            "url": silence_url
-        })
-    if dashboard_url:
-        actions.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "查看面板"},
-            "type": "default",
-            "url": dashboard_url
+            "behaviors": [{"type": "open_url", "default_url": detail_url}],
         })
 
-    if actions:
-        elements.append({"tag": "action", "actions": actions})
+    if status != "resolved" and alert_group_id:
+        actions_row.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "✅ ACK"},
+            "type": "default",
+            "behaviors": [{"type": "callback", "value": {"action": "acknowledge", "alert_group_id": alert_group_id}}],
+        })
+        actions_row.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "🔇 Resolve"},
+            "type": "danger",
+            "behaviors": [{"type": "callback", "value": {"action": "resolve", "alert_group_id": alert_group_id}}],
+        })
+
+    if actions_row:
+        elements.append({"tag": "action", "actions": actions_row})
+
+    # 操作按钮行 2：Silence 预设时间按钮
+    if status != "resolved" and alert_group_id:
+        silence_row = []
+        for preset in SILENCE_PRESETS:
+            silence_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"⏸️ Silence {preset['label']}"},
+                "type": "default",
+                "behaviors": [{"type": "callback", "value": {
+                    "action": "silence",
+                    "alert_group_id": alert_group_id,
+                    "delay": preset["seconds"],
+                }}],
+            })
+        elements.append({"tag": "action", "actions": silence_row})
 
     card = {
         "config": {"update_multi": True, "wide_screen_mode": True},
@@ -207,33 +270,102 @@ def build_alert_card(alert: dict, common_labels: dict = None) -> dict:
 # Grafana Webhook 处理
 # ============================================================
 
+def _normalize_oncall_payload(payload: dict) -> dict:
+    """
+    将 OnCall Outgoing Webhook 的 payload 转换为标准格式，并保留 OnCall 元信息。
+
+    返回的 dict 中注入 _oncall_meta 字段，包含 alert_group_id 等信息，
+    供 build_alert_card 使用。
+    """
+    alert_payload = payload.get("alert_payload", {})
+    alert_group = payload.get("alert_group", {})
+    oncall_event = payload.get("event", {})
+    alert_group_id = payload.get("alert_group_id", "")
+
+    oncall_meta = {
+        "event_type": oncall_event.get("type", ""),
+        "integration": payload.get("integration", {}),
+        "alert_group_id": alert_group_id,
+    }
+
+    if isinstance(alert_payload, dict) and "alerts" in alert_payload:
+        logger.info(
+            "OnCall payload 包含原始 Grafana alerts 数据: alert_count=%d, alert_group_id=%s",
+            len(alert_payload.get("alerts", [])), alert_group_id,
+        )
+        alert_payload["_oncall_meta"] = oncall_meta
+        return alert_payload
+
+    ag_state = alert_group.get("state", "firing")
+    status = "resolved" if ag_state == "resolved" else "firing"
+
+    alert_entry = {
+        "status": status,
+        "labels": alert_payload.get("labels", {}) if isinstance(alert_payload, dict) else {},
+        "annotations": alert_payload.get("annotations", {}) if isinstance(alert_payload, dict) else {},
+        "startsAt": alert_group.get("created_at", ""),
+        "endsAt": alert_group.get("resolved_at", ""),
+        "generatorURL": alert_group.get("alert_group_url", ""),
+    }
+
+    if isinstance(alert_payload, dict):
+        for key in ("startsAt", "endsAt", "generatorURL", "silenceURL", "dashboardURL", "panelURL"):
+            if key in alert_payload and alert_payload[key]:
+                alert_entry[key] = alert_payload[key]
+
+    logger.info(
+        "OnCall payload 转换为标准格式: status=%s, alert_name=%s, alert_group_id=%s",
+        status, alert_entry["labels"].get("alertname", "unknown"), alert_group_id,
+    )
+
+    return {
+        "status": status,
+        "alerts": [alert_entry],
+        "commonLabels": alert_entry["labels"],
+        "groupKey": alert_group_id,
+        "_oncall_meta": oncall_meta,
+    }
+
+
 def handle_grafana_webhook(payload: dict) -> dict:
     """
-    处理 Grafana Alerting Webhook 请求。
+    处理告警 Webhook 请求。
 
-    Grafana 会将多条告警聚合在一个 payload 中发送，格式：
-    {
-      "status": "firing" | "resolved",
-      "alerts": [...],
-      "groupLabels": {...},
-      "commonLabels": {...},
-      ...
-    }
+    支持两种 payload 格式：
+    1. OnCall Outgoing Webhook（包含 alert_payload 和 alert_group 字段）
+    2. Grafana Alerting 直接 Webhook（包含 alerts 数组）
     """
+    alert_group_id = ""
+    oncall_meta = {}
+
+    if "alert_payload" in payload and "alert_group" in payload:
+        logger.info(
+            "检测到 OnCall Outgoing Webhook payload: event_type=%s, alert_group_id=%s",
+            payload.get("event", {}).get("type", ""),
+            payload.get("alert_group_id", ""),
+        )
+        alert_group_id = payload.get("alert_group_id", "")
+        payload = _normalize_oncall_payload(payload)
+        oncall_meta = payload.get("_oncall_meta", {})
+
     alerts = payload.get("alerts", [])
     status = payload.get("status", "unknown")
     common_labels = payload.get("commonLabels", {})
     group_key = payload.get("groupKey", "")
 
     logger.info(
-        "收到 Grafana Webhook: status=%s, alerts=%d, groupKey=%s",
-        status, len(alerts), group_key
+        "处理告警: status=%s, alerts=%d, groupKey=%s, alert_group_id=%s",
+        status, len(alerts), group_key, alert_group_id,
     )
 
     results = []
     for alert in alerts:
         try:
-            card = build_alert_card(alert, common_labels)
+            card = build_alert_card(
+                alert, common_labels,
+                alert_group_id=alert_group_id,
+                oncall_meta=oncall_meta,
+            )
             resp = feishu_api.send_card(card=card)
             message_id = resp.get("data", {}).get("message_id", "")
 
@@ -242,15 +374,36 @@ def handle_grafana_webhook(payload: dict) -> dict:
                 "status": alert.get("status", ""),
                 "labels": alert.get("labels", {}),
                 "annotations": alert.get("annotations", {}),
+                "alert_group_id": alert_group_id,
                 "received_at": time.time(),
             }
             if message_id:
                 _cache_alert_message(message_id, alert_info)
 
             logger.info(
-                "飞书卡片已发送: alert=%s, status=%s, message_id=%s",
-                alert_info["alert_name"], alert_info["status"], message_id
+                "飞书卡片已发送: alert=%s, status=%s, message_id=%s, alert_group_id=%s",
+                alert_info["alert_name"], alert_info["status"], message_id, alert_group_id,
             )
+
+            # 卡片发送成功后，在话题中自动回复确认语
+            if message_id and status != "resolved":
+                try:
+                    thread_text = (
+                        f"🤖 值班虚拟员工已收到告警，正在待命中。\n"
+                        f"如需协助请在此话题中回复。"
+                    )
+                    thread_resp = feishu_api.reply_in_thread(message_id, thread_text)
+                    thread_msg_id = thread_resp.get("data", {}).get("message_id", "")
+                    logger.info(
+                        "已话题回复告警卡片: card_msg=%s, thread_msg=%s",
+                        message_id, thread_msg_id,
+                    )
+                except Exception as te:
+                    logger.error(
+                        "话题回复告警卡片失败: message_id=%s, error=%s",
+                        message_id, te, exc_info=True,
+                    )
+
             results.append({"alert": alert_info["alert_name"], "message_id": message_id, "ok": True})
 
         except Exception as e:
@@ -262,58 +415,110 @@ def handle_grafana_webhook(payload: dict) -> dict:
 
 
 # ============================================================
-# 飞书事件订阅处理
+# 飞书长连接回调处理（卡片交互 + 群消息）
 # ============================================================
 
-def handle_feishu_event(payload: dict) -> Optional[dict]:
+def _do_card_action_trigger(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
     """
-    处理飞书事件订阅回调。
-
-    飞书事件订阅会先发一个 challenge 验证请求，验证通过后才会发送实际事件。
-    事件类型：im.message.receive_v1（收到消息）
-
-    返回：
-      - challenge 验证时返回 {"challenge": "..."}
-      - 普通事件返回 None（不需要返回 body）
+    飞书卡片交互回调处理函数（通过 WebSocket 长连接接收）。
+    处理 ACK / Silence / Resolve 按钮点击。
+    同时兼容 value（JSON 1.0）和 behaviors（JSON 2.0）两种回调模式。
     """
-    # URL Verification（首次订阅验证）
-    if "challenge" in payload:
-        logger.info("飞书 URL 验证请求，返回 challenge")
-        return {"challenge": payload["challenge"]}
+    event = data.event
+    action = event.action if event else None
+    if not action:
+        logger.warning("卡片回调 event 或 action 为空")
+        return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "无效的操作"}})
 
-    # 事件处理
-    header = payload.get("header", {})
-    event_type = header.get("event_type", "")
-    event = payload.get("event", {})
+    tag = action.tag or ""
+    open_id = event.operator.open_id if event.operator else "unknown"
 
-    logger.info("收到飞书事件: type=%s, event_id=%s", event_type, header.get("event_id", ""))
+    value = action.value or {}
 
-    if event_type == "im.message.receive_v1":
-        _handle_message_event(event)
-    else:
-        logger.debug("忽略未处理的事件类型: %s", event_type)
+    logger.info(
+        "卡片回调原始数据: tag=%s, value=%s, option=%s, user=%s",
+        tag, json.dumps(value, ensure_ascii=False), getattr(action, 'option', ''), open_id,
+    )
 
-    return None
+    action_type = value.get("action", "")
+    alert_group_id = value.get("alert_group_id", "")
+
+    if not alert_group_id:
+        logger.warning("卡片回调缺少 alert_group_id: tag=%s, value=%s", tag, value)
+        return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "缺少告警 ID"}})
+
+    logger.info(
+        "飞书卡片操作: action=%s, alert_group_id=%s, user=%s, tag=%s",
+        action_type, alert_group_id, open_id, tag,
+    )
+
+    try:
+        if action_type == "acknowledge":
+            _oncall_api("POST", f"alertgroups/{alert_group_id}/acknowledge/")
+            logger.info("ACK 成功: alert_group_id=%s, operator=%s", alert_group_id, open_id)
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "success", "content": "✅ ACK 成功"}}
+            )
+
+        elif action_type == "resolve":
+            _oncall_api("POST", f"alertgroups/{alert_group_id}/resolve/")
+            logger.info("Resolve 成功: alert_group_id=%s, operator=%s", alert_group_id, open_id)
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "success", "content": "✅ Resolve 成功"}}
+            )
+
+        elif action_type == "silence":
+            # Silence 按钮：delay 直接从 value 中获取
+            delay = int(value.get("delay", 1800))
+            _oncall_api("POST", f"alertgroups/{alert_group_id}/silence/", {"delay": delay})
+            delay_text = _format_delay(delay)
+            logger.info("Silence 成功: alert_group_id=%s, delay=%s, operator=%s",
+                        alert_group_id, delay_text, open_id)
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "success", "content": f"✅ Silence {delay_text}"}}
+            )
+
+        else:
+            logger.warning("未知操作类型: %s", action_type)
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "error", "content": f"未知操作: {action_type}"}}
+            )
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        logger.error(
+            "OnCall 操作失败: action=%s, alert_group_id=%s, status=%d, body=%s",
+            action_type, alert_group_id, e.code, error_body[:300],
+        )
+        return P2CardActionTriggerResponse(
+            {"toast": {"type": "error", "content": f"操作失败: HTTP {e.code}"}}
+        )
+    except Exception as e:
+        logger.error("OnCall 操作异常: action=%s, error=%s", action_type, e, exc_info=True)
+        return P2CardActionTriggerResponse(
+            {"toast": {"type": "error", "content": f"操作异常: {e}"}}
+        )
 
 
-def _handle_message_event(event: dict):
+def _do_message_receive(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
     """
-    处理飞书群消息事件。
-
-    当前实现：收到消息后，简单回复确认。
-    后续可扩展为：分析告警上下文、调用 AI 生成处置建议等。
+    飞书群消息事件处理函数（通过 WebSocket 长连接接收）。
     """
-    message = event.get("message", {})
-    sender = event.get("sender", {})
+    event = data.event
+    if not event or not event.message:
+        return
 
-    message_id = message.get("message_id", "")
-    chat_id = message.get("chat_id", "")
-    msg_type = message.get("message_type", "")
-    content_str = message.get("content", "{}")
-    sender_type = sender.get("sender_type", "")
-    sender_id = sender.get("sender_id", {}).get("open_id", "")
+    message = event.message
+    sender = event.sender
 
-    # 忽略机器人自身发送的消息，避免无限循环
+    message_id = message.message_id or ""
+    chat_id = message.chat_id or ""
+    msg_type = message.message_type or ""
+    content_str = message.content or "{}"
+
+    sender_type = sender.sender_type if sender else ""
+    sender_id = sender.sender_id.open_id if sender and sender.sender_id else "unknown"
+
     if sender_type == "app":
         logger.debug("忽略机器人自身消息: message_id=%s", message_id)
         return
@@ -323,7 +528,6 @@ def _handle_message_event(event: dict):
         chat_id, message_id, msg_type, sender_id
     )
 
-    # 解析消息文本
     try:
         content = json.loads(content_str)
         text = content.get("text", "").strip()
@@ -331,11 +535,9 @@ def _handle_message_event(event: dict):
         text = ""
 
     if not text:
-        logger.debug("消息内容为空或非文本，跳过回复")
         return
 
-    # 检查是否是对告警消息的回复（通过 parent_id 关联）
-    parent_id = message.get("parent_id", "")
+    parent_id = message.parent_id or ""
     alert_context = _alert_message_cache.get(parent_id)
 
     if alert_context:
@@ -352,11 +554,166 @@ def _handle_message_event(event: dict):
         )
 
     try:
-        resp = feishu_api.reply_text(message_id, reply_text)
+        # 使用话题回复（reply_in_thread），让回复以话题形式挂在原消息下方
+        resp = feishu_api.reply_in_thread(message_id, reply_text)
         reply_msg_id = resp.get("data", {}).get("message_id", "")
-        logger.info("已回复消息: original=%s, reply=%s", message_id, reply_msg_id)
+        logger.info("已话题回复消息: original=%s, reply=%s", message_id, reply_msg_id)
     except Exception as e:
-        logger.error("回复消息失败: message_id=%s, error=%s", message_id, e, exc_info=True)
+        logger.error("话题回复消息失败: message_id=%s, error=%s", message_id, e, exc_info=True)
+
+
+def _do_card_action_trigger_v1(data):
+    """
+    飞书卡片交互回调处理函数（旧版 card.action.trigger_v1）。
+    当按钮使用 value 字段（JSON 1.0）时，飞书可能通过此事件发送回调。
+    将数据转发给新版处理函数。
+    """
+    logger.info("收到旧版卡片回调 card.action.trigger_v1: %s", type(data).__name__)
+
+    try:
+        raw = data.raw if hasattr(data, 'raw') else None
+        event_data = data.event if hasattr(data, 'event') else None
+
+        if raw:
+            logger.info("旧版回调原始数据(raw): %s", json.dumps(raw, ensure_ascii=False)[:500] if isinstance(raw, dict) else str(raw)[:500])
+
+        if event_data:
+            raw_event = event_data.__dict__ if hasattr(event_data, '__dict__') else str(event_data)
+            logger.info("旧版回调事件数据(event): %s", str(raw_event)[:500])
+
+        action = event_data.action if event_data and hasattr(event_data, 'action') else None
+        if action:
+            value = action.value if hasattr(action, 'value') and action.value else {}
+            tag = action.tag if hasattr(action, 'tag') else ""
+            open_id = "unknown"
+            if event_data and hasattr(event_data, 'operator') and event_data.operator:
+                open_id = event_data.operator.open_id if hasattr(event_data.operator, 'open_id') else "unknown"
+
+            logger.info(
+                "旧版回调解析: tag=%s, value=%s, user=%s",
+                tag, json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value), open_id,
+            )
+
+            action_type = value.get("action", "") if isinstance(value, dict) else ""
+            alert_group_id = value.get("alert_group_id", "") if isinstance(value, dict) else ""
+
+            if action_type and alert_group_id:
+                logger.info("旧版回调转发: action=%s, alert_group_id=%s", action_type, alert_group_id)
+                return _do_card_action_trigger(data)
+
+    except Exception as e:
+        logger.error("旧版回调处理异常: %s", e, exc_info=True)
+
+
+def _patch_ws_client_for_card_callback(cli):
+    """
+    Monkey-patch lark-oapi ws.Client._handle_data_frame，
+    修复 MessageType.CARD 消息被丢弃的 bug。
+
+    SDK 原始代码中 _handle_data_frame 对 MessageType.CARD 直接 return，
+    导致卡片交互回调（card.action.trigger）无法到达 event_handler。
+    补丁让 CARD 消息与 EVENT 消息走相同的 do_without_validation 路径。
+    """
+    import http as _http
+    import time as _time
+    import base64 as _b64
+    import lark_oapi.ws.client as _ws_mod
+
+    _MessageType = _ws_mod.MessageType
+    _UTF8 = "utf-8"
+
+    async def _patched_handle_data_frame(frame):
+        hs = frame.headers
+        msg_id = _ws_mod._get_by_key(hs, _ws_mod.HEADER_MESSAGE_ID)
+        trace_id = _ws_mod._get_by_key(hs, _ws_mod.HEADER_TRACE_ID)
+        sum_ = _ws_mod._get_by_key(hs, _ws_mod.HEADER_SUM)
+        seq = _ws_mod._get_by_key(hs, _ws_mod.HEADER_SEQ)
+        type_ = _ws_mod._get_by_key(hs, _ws_mod.HEADER_TYPE)
+
+        pl = frame.payload
+        if int(sum_) > 1:
+            pl = cli._combine(msg_id, int(sum_), int(seq), pl)
+            if pl is None:
+                return
+
+        message_type = _MessageType(type_)
+
+        resp = _ws_mod.Response(code=_http.HTTPStatus.OK)
+        try:
+            start = int(round(_time.time() * 1000))
+            if message_type == _MessageType.EVENT:
+                result = cli._event_handler.do_without_validation(pl)
+            elif message_type == _MessageType.CARD:
+                # --- 补丁核心：CARD 也走 event_handler ---
+                logger.info(
+                    "收到卡片交互回调(CARD): msg_id=%s, trace_id=%s",
+                    msg_id, trace_id,
+                )
+                result = cli._event_handler.do_without_validation(pl)
+            else:
+                return
+            end = int(round(_time.time() * 1000))
+
+            header = hs.add()
+            header.key = _ws_mod.HEADER_BIZ_RT
+            header.value = str(end - start)
+            if result is not None:
+                resp.data = _b64.b64encode(
+                    _ws_mod.JSON.marshal(result).encode(_UTF8)
+                )
+        except Exception as e:
+            logger.error(
+                "处理消息失败: type=%s, msg_id=%s, trace_id=%s, error=%s",
+                message_type.value, msg_id, trace_id, e, exc_info=True,
+            )
+            resp = _ws_mod.Response(code=_http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        frame.payload = _ws_mod.JSON.marshal(resp).encode(_UTF8)
+        await cli._write_message(frame.SerializeToString())
+
+    cli._handle_data_frame = _patched_handle_data_frame
+    logger.info("已 patch ws.Client._handle_data_frame 以支持 MessageType.CARD 回调")
+
+
+def _start_feishu_ws_client():
+    """
+    启动飞书 WebSocket 长连接客户端（在后台线程中运行）。
+    注册 card.action.trigger 和 im.message.receive_v1 回调。
+
+    注意：lark-oapi SDK 的 ws.Client._handle_data_frame 对 MessageType.CARD
+    直接 return 不处理，导致卡片交互回调无法到达 event_handler。
+    这里通过 monkey-patch 修复此问题，让 CARD 消息也走 event_handler。
+    """
+    if not FEISHU_APP_ID or not FEISHU_APP_SECRET:
+        logger.warning("飞书 app_id 或 app_secret 未配置，跳过 WebSocket 长连接")
+        return
+
+    event_handler = (
+        lark.EventDispatcherHandler.builder("", "")
+        .register_p2_card_action_trigger(_do_card_action_trigger)
+        .register_p2_customized_event("card.action.trigger_v1", _do_card_action_trigger_v1)
+        .register_p2_im_message_receive_v1(_do_message_receive)
+        .build()
+    )
+
+    lark_log_level = lark.LogLevel.INFO
+    if LOG_LEVEL == "DEBUG":
+        lark_log_level = lark.LogLevel.DEBUG
+
+    cli = lark.ws.Client(
+        FEISHU_APP_ID,
+        FEISHU_APP_SECRET,
+        event_handler=event_handler,
+        log_level=lark_log_level,
+    )
+
+    _patch_ws_client_for_card_callback(cli)
+
+    logger.info("飞书 WebSocket 长连接客户端启动中... app_id=%s", FEISHU_APP_ID[:8] + "***")
+    try:
+        cli.start()
+    except Exception as e:
+        logger.error("飞书 WebSocket 长连接异常退出: %s", e, exc_info=True)
 
 
 # ============================================================
@@ -390,13 +747,6 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
             result = handle_grafana_webhook(payload)
             self._send_json(200, result)
 
-        elif self.path == "/webhook/feishu":
-            result = handle_feishu_event(payload)
-            if result is not None:
-                self._send_json(200, result)
-            else:
-                self._send_json(200, {"ok": True})
-
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -414,10 +764,16 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    # 在后台线程启动飞书 WebSocket 长连接（接收卡片交互 + 群消息回调）
+    ws_thread = threading.Thread(target=_start_feishu_ws_client, daemon=True, name="feishu-ws")
+    ws_thread.start()
+
+    # 主线程启动 HTTP Server（接收 OnCall Outgoing Webhook）
     server = HTTPServer(("0.0.0.0", PORT), AlarmServiceHandler)
     logger.info("alarm-service 启动: port=%d", PORT)
-    logger.info("  POST /webhook/grafana  — 接收 Grafana 告警 Webhook")
-    logger.info("  POST /webhook/feishu   — 接收飞书事件订阅回调")
+    logger.info("  POST /webhook/grafana  — 接收 OnCall 告警 Webhook")
+    logger.info("  飞书 WebSocket 长连接   — 卡片交互回调 (card.action.trigger)")
+    logger.info("  飞书 WebSocket 长连接   — 群消息事件 (im.message.receive_v1)")
     logger.info("  GET  /health           — 健康检查")
 
     try:

@@ -384,6 +384,26 @@ def handle_grafana_webhook(payload: dict) -> dict:
                 "飞书卡片已发送: alert=%s, status=%s, message_id=%s, alert_group_id=%s",
                 alert_info["alert_name"], alert_info["status"], message_id, alert_group_id,
             )
+
+            # 卡片发送成功后，在话题中自动回复确认语
+            if message_id and status != "resolved":
+                try:
+                    thread_text = (
+                        f"🤖 值班虚拟员工已收到告警，正在待命中。\n"
+                        f"如需协助请在此话题中回复。"
+                    )
+                    thread_resp = feishu_api.reply_in_thread(message_id, thread_text)
+                    thread_msg_id = thread_resp.get("data", {}).get("message_id", "")
+                    logger.info(
+                        "已话题回复告警卡片: card_msg=%s, thread_msg=%s",
+                        message_id, thread_msg_id,
+                    )
+                except Exception as te:
+                    logger.error(
+                        "话题回复告警卡片失败: message_id=%s, error=%s",
+                        message_id, te, exc_info=True,
+                    )
+
             results.append({"alert": alert_info["alert_name"], "message_id": message_id, "ok": True})
 
         except Exception as e:
@@ -534,11 +554,12 @@ def _do_message_receive(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
         )
 
     try:
-        resp = feishu_api.reply_text(message_id, reply_text)
+        # 使用话题回复（reply_in_thread），让回复以话题形式挂在原消息下方
+        resp = feishu_api.reply_in_thread(message_id, reply_text)
         reply_msg_id = resp.get("data", {}).get("message_id", "")
-        logger.info("已回复消息: original=%s, reply=%s", message_id, reply_msg_id)
+        logger.info("已话题回复消息: original=%s, reply=%s", message_id, reply_msg_id)
     except Exception as e:
-        logger.error("回复消息失败: message_id=%s, error=%s", message_id, e, exc_info=True)
+        logger.error("话题回复消息失败: message_id=%s, error=%s", message_id, e, exc_info=True)
 
 
 def _do_card_action_trigger_v1(data):

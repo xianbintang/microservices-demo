@@ -72,23 +72,28 @@ def _find_env_file() -> Path:
 # ============================================================
 
 def _load_env() -> dict:
-    """从 .env 文件读取配置，返回 key-value 字典。"""
+    """
+    读取配置，返回 key-value 字典。
+
+    优先从 .env 文件读取（本地开发场景）；
+    如果找不到 .env 文件，则从 os.environ 读取（Docker 容器场景，
+    由 docker-compose env_file 或 environment 注入）。
+    """
+    import os as _os
     env_path = _find_env_file()
-    if not env_path:
-        raise FileNotFoundError(
-            f"找不到 .env 文件。已从 {_SKILL_DIR} 向上逐级搜索。"
-            "\n请在项目根目录创建 .env 并配置 app_id 和 app_secret。"
-        )
-    env_vars = {}
-    with open(env_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, value = line.split("=", 1)
-                env_vars[key.strip()] = value.strip()
-    return env_vars
+    if env_path:
+        env_vars = {}
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    env_vars[key.strip()] = value.strip()
+        return env_vars
+    # .env 文件不存在时，从系统环境变量读取（兼容容器部署场景）
+    return dict(_os.environ)
 
 
 def _load_cache() -> dict:

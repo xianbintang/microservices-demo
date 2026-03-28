@@ -2,11 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir lark-oapi
+# 先安装依赖（利用 Docker 缓存层，依赖不变时不重复安装）
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py /app/server.py
 COPY feishu_api.py /app/feishu_api.py
-COPY .env /app/.env
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
