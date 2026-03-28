@@ -14,11 +14,11 @@ Such changes should be opt-in only — ideally, as a [Kustomize Component](https
 
 The following statement about Online Boutique should always be true:
 
-> A user outside of Google can deploy Online Boutique's default configuration on a [_kind_ Kubernetes cluster](https://kind.sigs.k8s.io/).
+> A user outside of Google can deploy Online Boutique's default configuration on a remote [Kind (Kubernetes in Docker)](https://kind.sigs.k8s.io/) cluster with integrated observability stack.
 
 This statement describes the golden user journey that we expect new Kubernetes users to take while onboarding to Online Boutique.
 
-Being able to run Online Boutique on a _kind_ cluster ensures that Online Boutique is free and cloud-agnostic. This is aligned with [Google's mission](https://about.google/) of making information universally accessible and useful. To be specific, Online Boutique should be useful and accessible to developers that are new to Kubernetes.
+Being able to run Online Boutique on a remote Kind cluster ensures that Online Boutique is free and cloud-agnostic. The deployment uses a dedicated remote server with pre-configured observability stack (Prometheus/Grafana/Loki/Tempo), providing a production-like environment accessible to all team members.
 
 ### 2. Preserve the simplicity of demos
 

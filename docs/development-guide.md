@@ -13,8 +13,7 @@ This doc explains how to build and run the Online Boutique source code locally u
     cd microservices-demo/
     ```
 - A Google Cloud project with Google Container Registry enabled. (for Option 1 - GKE)
-- [Minikube](https://minikube.sigs.k8s.io/docs/start/) (optional for Option 2 - Local Cluster)
-- [Kind](https://kind.sigs.k8s.io/) (optional for Option 2 - Local Cluster)
+- SSH access to remote server (for Option 2 - Remote Kind Cluster)
 
 ## Option 1: Google Kubernetes Engine (GKE)
 
@@ -82,42 +81,39 @@ This doc explains how to build and run the Online Boutique source code locally u
 
 5.  Navigate to `http://EXTERNAL-IP` to access the web frontend.
 
-## Option 2 - Local Cluster 
+## Option 2 - Remote Kind Cluster
 
-1. Launch a local Kubernetes cluster with one of the following tools:
+Deploy Online Boutique to a remote server using Kind (Kubernetes in Docker). The remote server runs both the Kind cluster and the observability stack (Prometheus/Grafana/Loki/Tempo).
 
-    - To launch **Minikube** (tested with Ubuntu Linux). Please, ensure that the
-       local Kubernetes cluster has at least:
-        - 4 CPUs
-        - 4.0 GiB memory
-        - 32 GB disk space
+1. Sync the project code to the remote server:
 
-      ```shell
-      minikube start --cpus=4 --memory 4096 --disk-size 32g
-      ```
+    ```shell
+    rsync -avz --exclude='.git' --exclude='node_modules' ./ root@47.83.217.162:/opt/microservices-demo/
+    ```
 
-    - To launch **Docker for Desktop** (tested with Mac/Windows). Go to Preferences:
-        - choose “Enable Kubernetes”,
-        - set CPUs to at least 3, and Memory to at least 6.0 GiB
-        - on the "Disk" tab, set at least 32 GB disk space
+2. Run the deployment script on the remote server:
 
-    - To launch a **Kind** cluster:
+    ```shell
+    ssh root@47.83.217.162 'cd /opt/microservices-demo && bash deploy/kind/deploy-remote.sh up'
+    ```
 
-      ```shell
-      kind create cluster
-      ```
+    The script automatically handles Kind cluster creation, image preparation, monitoring stack deployment, and application deployment.
 
-2. Run `kubectl get nodes` to verify you're connected to the respective control plane.
+3. Access the application:
+    - Frontend: http://47.83.217.162:9999
+    - Grafana: http://47.83.217.162:3000 (admin/admin)
 
-3. Run `skaffold run` (first time will be slow, it can take ~20 minutes).
-   This will build and deploy the application. If you need to rebuild the images
-   automatically as you refactor the code, run `skaffold dev` command.
+4. Check cluster status:
 
-4. Run `kubectl get pods` to verify the Pods are ready and running.
+    ```shell
+    ssh root@47.83.217.162 'cd /opt/microservices-demo && bash deploy/kind/deploy-remote.sh status'
+    ```
 
-5. Run `kubectl port-forward deployment/frontend 8080:8080` to forward a port to the frontend service.
+5. Tear down:
 
-6. Navigate to `localhost:8080` to access the web frontend.
+    ```shell
+    ssh root@47.83.217.162 'cd /opt/microservices-demo && bash deploy/kind/deploy-remote.sh down'
+    ```
 
 ## Adding a new microservice
 

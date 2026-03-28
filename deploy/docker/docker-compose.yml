@@ -1,4 +1,16 @@
-version: "3.9"
+x-oncall-environment: &oncall-environment
+  DATABASE_TYPE: sqlite3
+  BROKER_TYPE: redis
+  BASE_URL: http://oncall:8080
+  SECRET_KEY: ${ONCALL_SECRET_KEY:-my-oncall-secret-key-change-me-please}
+  REDIS_URI: redis://oncall-redis:6379/0
+  DJANGO_SETTINGS_MODULE: settings.hobby
+  CELERY_WORKER_QUEUE: "default,critical,long,slack,telegram,mattermost,webhook,retry,celery,grafana"
+  CELERY_WORKER_CONCURRENCY: "1"
+  CELERY_WORKER_MAX_TASKS_PER_CHILD: "100"
+  CELERY_WORKER_SHUTDOWN_INTERVAL: "65m"
+  CELERY_WORKER_BEAT_ENABLED: "True"
+  GRAFANA_API_URL: http://grafana:3000
 
 networks:
   obs-net:
@@ -9,6 +21,8 @@ volumes:
   grafana-data:
   loki-data:
   tempo-data:
+  oncall-data:
+  oncall-redis-data:
 
 services:
   prometheus:
@@ -23,7 +37,6 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
@@ -66,6 +79,8 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_MANAGED_SERVICE_ACCOUNTS_ENABLED=true
+      - GF_INSTALL_PLUGINS=grafana-oncall-app
     volumes:
       - ./grafana/grafana.ini:/etc/grafana/grafana.ini:ro
       - grafana-data:/var/lib/grafana
@@ -77,3 +92,88 @@ services:
       - prometheus
       - loki
       - tempo
+
+  oncall:
+    image: grafana/oncall:v1.16.11
+    container_name: oncall
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    command: sh -c "uwsgi --ini uwsgi.ini"
+    environment: *oncall-environment
+    volumes:
+      - oncall-data:/var/lib/oncall
+    networks:
+      - obs-net
+    depends_on:
+      oncall-db-migration:
+        condition: service_completed_successfully
+      oncall-redis:
+        condition: service_healthy
+
+  oncall-celery:
+    image: grafana/oncall:v1.16.11
+    container_name: oncall-celery
+    restart: unless-stopped
+    command: sh -c "./celery_with_exporter.sh"
+    environment: *oncall-environment
+    volumes:
+      - oncall-data:/var/lib/oncall
+    networks:
+      - obs-net
+    depends_on:
+      oncall-db-migration:
+        condition: service_completed_successfully
+      oncall-redis:
+        condition: service_healthy
+
+  oncall-db-migration:
+    image: grafana/oncall:v1.16.11
+    container_name: oncall-db-migration
+    command: python manage.py migrate --noinput
+    environment: *oncall-environment
+    volumes:
+      - oncall-data:/var/lib/oncall
+    networks:
+      - obs-net
+    depends_on:
+      oncall-redis:
+        condition: service_healthy
+
+  oncall-redis:
+    image: redis:7.0.15
+    container_name: oncall-redis
+    restart: unless-stopped
+    expose:
+      - 6379
+    volumes:
+      - oncall-redis-data:/data
+    networks:
+      - obs-net
+    deploy:
+      resources:
+        limits:
+          memory: 500m
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 5s
+      interval: 5s
+      retries: 10
+
+  alarm-service:
+    build:
+      context: ./alarm-service
+    image: alarm-service:latest
+    container_name: alarm-service
+    restart: unless-stopped
+    environment:
+      - app_id=${app_id}
+      - app_secret=${app_secret}
+      - feishu_chat_id=${feishu_chat_id}
+      - ALARM_SERVICE_PORT=9095
+      - LOG_LEVEL=INFO
+    ports:
+      - "9095:9095"
+    networks:
+      - obs-net

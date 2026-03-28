@@ -133,4 +133,4 @@ Service Account：mcp-grafana (Admin)
 - `.mcp.json` 包含敏感 token，已自动加入 `.gitignore`
 - Token 具有 Admin 权限，请妥善保管
 - 如需重新生成 token，删除旧 token 后重新运行此 skill
-- kind 环境需确保端口转发运行中（端口 3000）
+- 远端 Kind 集群已部署在 47.83.217.162，Grafana 通过 Docker Compose 独立运行在同一宿主机（端口 3000），无需端口转发
