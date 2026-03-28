@@ -167,10 +167,9 @@ services:
     image: alarm-service:latest
     container_name: alarm-service
     restart: unless-stopped
+    env_file:
+      - ./alarm-service/.env
     environment:
-      - app_id=${app_id}
-      - app_secret=${app_secret}
-      - feishu_chat_id=${feishu_chat_id}
       - ALARM_SERVICE_PORT=9095
       - LOG_LEVEL=INFO
     ports:
