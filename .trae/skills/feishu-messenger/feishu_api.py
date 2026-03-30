@@ -863,6 +863,126 @@ def wait_approval(approval_id: str, timeout: int = None,
     return timeout_result
 
 
+# ============================================================
+# 9. 群 Tab（会话标签页）管理
+# ============================================================
+
+def list_chat_tabs(chat_id: str = None) -> list:
+    """
+    获取群聊中已有的会话标签页列表。
+
+    参数:
+        chat_id: 群聊 ID；为 None 时使用 .env 默认值
+    返回:
+        标签页列表 [{"tab_id": "...", "tab_name": "...", "tab_type": "...", ...}, ...]
+    """
+    chat_id = _resolve_chat_id(chat_id)
+    token = get_token()
+    url = f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/chat_tabs/list_tabs"
+    result = _api_request(token, "GET", url)
+    if result.get("code") != 0:
+        raise RuntimeError(f"获取群 Tab 列表失败: code={result.get('code')}, msg={result.get('msg')}")
+    return result.get("data", {}).get("chat_tabs", [])
+
+
+def create_chat_tab(tab_name: str, url: str, chat_id: str = None,
+                    icon_key: str = None) -> dict:
+    """
+    为群聊添加 URL 类型的会话标签页。
+    添加后，群成员点击该 Tab 将在飞书侧边栏内打开指定网页。
+
+    前置条件：
+      - 应用已开启机器人能力
+      - 机器人已在目标群中
+      - URL 的域名已在飞书开放平台应用的「H5 可信域名」中配置
+
+    参数:
+        tab_name: Tab 显示名称（如 "🤖 问题管理"）
+        url:      Tab 打开的网页 URL
+        chat_id:  群聊 ID；为 None 时使用 .env 默认值
+        icon_key: 可选的自定义图标 key
+    返回:
+        创建结果 dict，包含 chat_tabs 列表
+    """
+    chat_id = _resolve_chat_id(chat_id)
+    token = get_token()
+    api_url = f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/chat_tabs"
+
+    tab = {
+        "tab_type": "url",
+        "tab_name": tab_name,
+        "tab_content": {"url": url},
+    }
+    if icon_key:
+        tab["tab_config"] = {"icon_key": icon_key, "is_built_in": False}
+
+    payload = {"chat_tabs": [tab]}
+    result = _api_request(token, "POST", api_url, payload)
+    if result.get("code") != 0:
+        raise RuntimeError(f"创建群 Tab 失败: code={result.get('code')}, msg={result.get('msg')}")
+    return result.get("data", {})
+
+
+def delete_chat_tab(tab_ids: list, chat_id: str = None) -> dict:
+    """
+    删除群聊中指定的会话标签页。
+
+    参数:
+        tab_ids: 要删除的 Tab ID 列表
+        chat_id: 群聊 ID；为 None 时使用 .env 默认值
+    返回:
+        删除结果 dict
+    """
+    chat_id = _resolve_chat_id(chat_id)
+    token = get_token()
+    api_url = f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/chat_tabs/delete_tabs"
+    payload = {"tab_ids": tab_ids}
+    result = _api_request(token, "DELETE", api_url, payload)
+    if result.get("code") != 0:
+        raise RuntimeError(f"删除群 Tab 失败: code={result.get('code')}, msg={result.get('msg')}")
+    return result.get("data", {})
+
+
+def ensure_chat_tab(tab_name: str, url: str, chat_id: str = None) -> dict:
+    """
+    确保群聊中存在指定名称的 Tab。
+    如果已存在同名 Tab 且 URL 一致，则跳过；URL 不同则先删再建；不存在则创建。
+
+    参数:
+        tab_name: Tab 显示名称
+        url:      Tab 打开的网页 URL
+        chat_id:  群聊 ID
+    返回:
+        {"action": "created" | "updated" | "already_exists", "tab_id": "..."}
+    """
+    chat_id = _resolve_chat_id(chat_id)
+    try:
+        tabs = list_chat_tabs(chat_id)
+    except RuntimeError:
+        tabs = []
+
+    for tab in tabs:
+        if tab.get("tab_name") == tab_name:
+            existing_url = tab.get("tab_content", {}).get("url", "")
+            if existing_url == url:
+                return {"action": "already_exists", "tab_id": tab.get("tab_id", "")}
+            # URL 不同，先删后建
+            try:
+                delete_chat_tab([tab["tab_id"]], chat_id)
+            except RuntimeError:
+                pass
+            result = create_chat_tab(tab_name, url, chat_id)
+            new_tabs = result.get("chat_tabs", [])
+            new_id = new_tabs[0].get("tab_id", "") if new_tabs else ""
+            return {"action": "updated", "tab_id": new_id}
+
+    # 不存在，新建
+    result = create_chat_tab(tab_name, url, chat_id)
+    new_tabs = result.get("chat_tabs", [])
+    new_id = new_tabs[0].get("tab_id", "") if new_tabs else ""
+    return {"action": "created", "tab_id": new_id}
+
+
 def send_approval_and_wait(title: str, description: str, chat_id: str = None,
                            risk_level: str = "high", timeout: int = None) -> dict:
     """
@@ -917,6 +1037,10 @@ def _cli():
     python3 feishu_api.py send_approval [chat_id] <title> <description> [risk_level] [timeout]
     python3 feishu_api.py send_approval_only [chat_id] <title> <description> [risk_level]
     python3 feishu_api.py approval_result <approval_id> <confirm|reject> [operator_id]
+    python3 feishu_api.py list_tabs [chat_id]
+    python3 feishu_api.py create_tab [chat_id] <tab_name> <url>
+    python3 feishu_api.py delete_tab [chat_id] <tab_id>
+    python3 feishu_api.py ensure_tab [chat_id] <tab_name> <url>
     """
     all_commands = [
         "token", "send", "send_card", "reply", "reply_thread",
@@ -924,6 +1048,7 @@ def _cli():
         "urgent_app", "urgent_phone", "urgent_sms",
         "history", "members", "find_member", "get_message",
         "send_approval", "send_approval_only", "approval_result",
+        "list_tabs", "create_tab", "delete_tab", "ensure_tab",
     ]
 
     if len(sys.argv) < 2:
@@ -1094,6 +1219,48 @@ def _cli():
                 return
             toast = handle_approval_callback(a_action, a_id, a_operator)
             print(f"[OK] {toast}")
+
+        elif cmd == "list_tabs":
+            chat_id = sys.argv[2] if len(sys.argv) >= 3 and _is_chat_id(sys.argv[2]) else None
+            tabs = list_chat_tabs(chat_id)
+            print(f"共 {len(tabs)} 个标签页")
+            for t in tabs:
+                tab_url = t.get("tab_content", {}).get("url", t.get("tab_content", {}).get("doc", ""))
+                print(f"  [{t.get('tab_type', '?')}] {t.get('tab_name', '(无名)')} | id={t.get('tab_id', '')} | {tab_url}")
+
+        elif cmd == "create_tab" and len(sys.argv) >= 4:
+            args = sys.argv[2:]
+            chat_id = None
+            if _is_chat_id(args[0]):
+                chat_id = args.pop(0)
+            if len(args) < 2:
+                print("[ERROR] create_tab 至少需要 <tab_name> 和 <url>")
+                return
+            result = create_chat_tab(args[0], args[1], chat_id)
+            new_tabs = result.get("chat_tabs", [])
+            if new_tabs:
+                print(f"[OK] Tab 已创建: id={new_tabs[0].get('tab_id', '')}")
+            else:
+                print("[OK] Tab 创建请求已发送")
+
+        elif cmd == "delete_tab" and len(sys.argv) >= 3:
+            args = sys.argv[2:]
+            chat_id = None
+            if _is_chat_id(args[0]) and len(args) >= 2:
+                chat_id = args.pop(0)
+            delete_chat_tab([args[0]], chat_id)
+            print(f"[OK] Tab {args[0]} 已删除")
+
+        elif cmd == "ensure_tab" and len(sys.argv) >= 4:
+            args = sys.argv[2:]
+            chat_id = None
+            if _is_chat_id(args[0]):
+                chat_id = args.pop(0)
+            if len(args) < 2:
+                print("[ERROR] ensure_tab 至少需要 <tab_name> 和 <url>")
+                return
+            result = ensure_chat_tab(args[0], args[1], chat_id)
+            print(f"[OK] {result['action']} | tab_id={result.get('tab_id', '')}")
 
         else:
             print(f"未知命令或参数不足: {cmd}")

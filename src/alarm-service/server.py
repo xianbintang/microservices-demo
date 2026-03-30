@@ -18,7 +18,9 @@ alarm-service — 报警消息中转与监听服务
 import base64
 import json
 import logging
+import mimetypes
 import os
+import re
 import sys
 import threading
 import time
@@ -41,6 +43,8 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
+
+import problem_manager as pm
 
 PORT = int(os.environ.get("ALARM_SERVICE_PORT", "9095"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -820,17 +824,70 @@ def _start_feishu_ws_client():
 # HTTP Server
 # ============================================================
 
+# H5 静态文件目录
+STATIC_DIR = Path(__file__).parent / "static"
+
+
 class AlarmServiceHandler(BaseHTTPRequestHandler):
-    """HTTP 请求处理器"""
+    """HTTP 请求处理器，包含 Webhook API、Problem REST API、H5 静态文件服务。"""
 
     def do_GET(self):
         if self.path == "/health":
             self._send_json(200, {"status": "ok", "service": "alarm-service"})
+
+        # --- Problem REST API ---
+        elif self.path == "/api/problems" or self.path.startswith("/api/problems?"):
+            self._handle_get_problems()
+
+        elif re.match(r"^/api/problems/P-\d+$", self.path):
+            problem_id = self.path.split("/")[-1]
+            self._handle_get_problem_detail(problem_id)
+
+        # --- H5 静态文件服务 ---
+        elif self.path.startswith("/static/"):
+            self._serve_static_file()
+
+        # --- 根路径重定向到 H5 页面 ---
+        elif self.path == "/" or self.path == "/problems":
+            self.send_response(302)
+            self.send_header("Location", "/static/problem.html")
+            self.end_headers()
+
         else:
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
+
+        # --- Problem API: 审批动作（approve/reject） ---
+        approve_match = re.match(r"^/api/problems/(P-\d+)/actions/([^/]+)/approve$", self.path)
+        reject_match = re.match(r"^/api/problems/(P-\d+)/actions/([^/]+)/reject$", self.path)
+
+        if approve_match:
+            problem_id, action_id = approve_match.groups()
+            operator = "user"
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    operator = body.get("operator", "user")
+                except Exception:
+                    pass
+            self._handle_approve_action(problem_id, action_id, operator)
+            return
+
+        if reject_match:
+            problem_id, action_id = reject_match.groups()
+            operator = "user"
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    operator = body.get("operator", "user")
+                except Exception:
+                    pass
+            self._handle_reject_action(problem_id, action_id, operator)
+            return
+
+        # --- 原有 Webhook API ---
         if content_length == 0:
             self._send_json(400, {"error": "empty body"})
             return
@@ -850,13 +907,129 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not found"})
 
+    def do_OPTIONS(self):
+        """处理 CORS 预检请求。"""
+        self.send_response(200)
+        self._add_cors_headers()
+        self.end_headers()
+
+    # --- Problem API 处理函数 ---
+
+    def _handle_get_problems(self):
+        """GET /api/problems?status=xxx — 获取问题列表。"""
+        manager = pm.get_manager()
+
+        # 解析 query string 中的 status 参数
+        status_filter = None
+        if "?" in self.path:
+            query = self.path.split("?", 1)[1]
+            for param in query.split("&"):
+                if param.startswith("status="):
+                    status_filter = param.split("=", 1)[1]
+
+        if status_filter and status_filter in pm.ALL_STATUSES:
+            problems = manager.get_problems_by_status(status_filter)
+        else:
+            problems = manager.get_all_problems()
+
+        result = {
+            "total": len(problems),
+            "problems": [p.to_dict() for p in problems],
+        }
+        self._send_json(200, result)
+
+    def _handle_get_problem_detail(self, problem_id: str):
+        """GET /api/problems/:id — 获取问题详情。"""
+        manager = pm.get_manager()
+        problem = manager.get_problem(problem_id)
+
+        if not problem:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+            return
+
+        self._send_json(200, problem.to_dict())
+
+    def _handle_approve_action(self, problem_id: str, action_id: str, operator: str):
+        """POST /api/problems/:id/actions/:actionId/approve — 审批通过。"""
+        manager = pm.get_manager()
+        action = manager.approve_action(problem_id, action_id, operator)
+
+        if not action:
+            self._send_json(400, {"error": "审批失败：问题或动作不存在，或动作非 pending 状态"})
+            return
+
+        problem = manager.get_problem(problem_id)
+        self._send_json(200, {
+            "message": f"动作「{action.description}」已批准执行",
+            "action": action.to_dict(),
+            "problem_status": problem.status if problem else "unknown",
+        })
+
+    def _handle_reject_action(self, problem_id: str, action_id: str, operator: str):
+        """POST /api/problems/:id/actions/:actionId/reject — 取消动作。"""
+        manager = pm.get_manager()
+        action = manager.reject_action(problem_id, action_id, operator)
+
+        if not action:
+            self._send_json(400, {"error": "取消失败：问题或动作不存在，或动作非 pending 状态"})
+            return
+
+        problem = manager.get_problem(problem_id)
+        self._send_json(200, {
+            "message": f"动作「{action.description}」已取消",
+            "action": action.to_dict(),
+            "problem_status": problem.status if problem else "unknown",
+        })
+
+    # --- 静态文件服务 ---
+
+    def _serve_static_file(self):
+        """提供 /static/ 目录下的 H5 文件。"""
+        # 去掉 /static/ 前缀，映射到文件系统
+        relative_path = self.path[len("/static/"):]
+        # 安全检查：防止路径穿越
+        if ".." in relative_path or relative_path.startswith("/"):
+            self._send_json(403, {"error": "forbidden"})
+            return
+
+        file_path = STATIC_DIR / relative_path
+        if not file_path.exists() or not file_path.is_file():
+            self._send_json(404, {"error": "file not found"})
+            return
+
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        try:
+            with open(file_path, "rb") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self._add_cors_headers()
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            logger.error("读取静态文件失败 %s: %s", file_path, e)
+            self._send_json(500, {"error": "internal server error"})
+
+    # --- 工具方法 ---
+
     def _send_json(self, status_code: int, data: dict):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._add_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def _add_cors_headers(self):
+        """添加 CORS 响应头，允许 H5 页面跨域调用 API。"""
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def log_message(self, format, *args):
         """覆盖默认日志，使用 logging 模块"""
@@ -868,6 +1041,10 @@ def main():
     # 启动时获取机器人自身 open_id（用于 @检测）
     _BOT_OPEN_ID = _fetch_bot_open_id()
 
+    # 初始化 Problem Manager（加载持久化数据）
+    manager = pm.get_manager()
+    logger.info("Problem Manager 已初始化, 当前 %d 个问题", len(manager.get_all_problems()))
+
     # 在后台线程启动飞书 WebSocket 长连接（接收卡片交互 + 群消息回调）
     ws_thread = threading.Thread(target=_start_feishu_ws_client, daemon=True, name="feishu-ws")
     ws_thread.start()
@@ -875,10 +1052,14 @@ def main():
     # 主线程启动 HTTP Server（接收 OnCall Outgoing Webhook）
     server = HTTPServer(("0.0.0.0", PORT), AlarmServiceHandler)
     logger.info("alarm-service 启动: port=%d", PORT)
-    logger.info("  POST /webhook/grafana  — 接收 OnCall 告警 Webhook")
-    logger.info("  飞书 WebSocket 长连接   — 卡片交互回调 (card.action.trigger)")
-    logger.info("  飞书 WebSocket 长连接   — 群消息事件 (im.message.receive_v1)")
-    logger.info("  GET  /health           — 健康检查")
+    logger.info("  POST /webhook/grafana          — 接收 OnCall 告警 Webhook")
+    logger.info("  GET  /api/problems             — Problem 列表 API")
+    logger.info("  GET  /api/problems/:id         — Problem 详情 API")
+    logger.info("  POST /api/problems/:id/actions/:aid/approve  — 审批通过")
+    logger.info("  POST /api/problems/:id/actions/:aid/reject   — 取消动作")
+    logger.info("  GET  /static/*                 — H5 静态文件")
+    logger.info("  GET  /health                   — 健康检查")
+    logger.info("  H5 页面: http://0.0.0.0:%d/static/problem.html", PORT)
 
     try:
         server.serve_forever()

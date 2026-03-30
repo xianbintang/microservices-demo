@@ -23,6 +23,7 @@ volumes:
   tempo-data:
   oncall-data:
   oncall-redis-data:
+  alarm-data:
 
 services:
   prometheus:
@@ -174,5 +175,7 @@ services:
       - LOG_LEVEL=INFO
     ports:
       - "9095:9095"
+    volumes:
+      - alarm-data:/app/data
     networks:
       - obs-net

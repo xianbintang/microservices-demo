@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Problem 管理 - 值班虚拟员工</title>
+<style>
+  :root {
+    --primary: #3370FF;
+    --primary-light: #EBF0FF;
+    --success: #34C724;
+    --success-light: #E8F8E6;
+    --warning: #FF9800;
+    --warning-light: #FFF3E0;
+    --danger: #F54A45;
+    --danger-light: #FFEDED;
+    --pending: #F77234;
+    --pending-light: #FFF0E6;
+    --text-primary: #1F2329;
+    --text-secondary: #646A73;
+    --text-tertiary: #8F959E;
+    --bg-page: #F5F6F7;
+    --bg-card: #FFFFFF;
+    --border: #E5E6EB;
+    --shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 顶部导航 ===== */
+  .navbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .navbar .back-btn {
+    display: none;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 20px;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    transition: background 0.2s;
+  }
+  .navbar .back-btn:hover { background: var(--bg-page); }
+  .navbar .title {
+    font-size: 17px;
+    font-weight: 600;
+    flex: 1;
+  }
+  .navbar .subtitle {
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  /* ===== 统计卡片 ===== */
+  .stats-row {
+    display: flex;
+    gap: 6px;
+    padding: 12px 12px 8px;
+    overflow-x: auto;
+  }
+  .stat-card {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 10px 4px;
+    text-align: center;
+    box-shadow: var(--shadow);
+  }
+  .stat-card .number {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .stat-card .label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+  .stat-card.open .number { color: var(--danger); }
+  .stat-card.pending .number { color: var(--pending); }
+  .stat-card.recovering .number { color: var(--warning); }
+  .stat-card.resolved .number { color: var(--success); }
+  .stat-card.total .number { color: var(--primary); }
+
+  /* ===== 筛选栏 ===== */
+  .filter-bar {
+    display: flex;
+    gap: 6px;
+    padding: 0 12px 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .filter-bar::-webkit-scrollbar { display: none; }
+  .filter-chip {
+    padding: 5px 10px;
+    border-radius: 14px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  .filter-chip.active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+  }
+  .filter-chip:hover { border-color: var(--primary); }
+
+  /* ===== 问题列表 ===== */
+  .problem-list { padding: 0 12px 80px; }
+
+  .problem-card {
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 8px;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .problem-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  }
+  .problem-card:active { transform: scale(0.99); }
+  .problem-card.status-open { border-left-color: var(--danger); }
+  .problem-card.status-pending { border-left-color: var(--pending); }
+  .problem-card.status-recovering { border-left-color: var(--warning); }
+  .problem-card.status-resolved { border-left-color: var(--success); }
+
+  .problem-card .header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .problem-card .pid {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-light);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .problem-card .status-badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+  .status-badge.open { background: var(--danger-light); color: var(--danger); }
+  .status-badge.pending { background: var(--pending-light); color: var(--pending); }
+  .status-badge.recovering { background: var(--warning-light); color: var(--warning); }
+  .status-badge.resolved { background: var(--success-light); color: var(--success); }
+
+  .problem-card .problem-title {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 6px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-all;
+  }
+
+  .problem-card .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+  .problem-card .meta-row span { display: flex; align-items: center; gap: 4px; }
+
+  /* ===== 详情页 ===== */
+  .detail-page { display: none; }
+  .detail-page.active { display: block; }
+  .list-page.hidden { display: none; }
+
+  .detail-header {
+    background: var(--bg-card);
+    padding: 14px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-header .pid-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .detail-header .pid-large {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--primary);
+  }
+  .detail-header .detail-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    word-break: break-all;
+  }
+  .detail-header .detail-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .detail-header .detail-meta .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .detail-header .detail-meta .meta-label { color: var(--text-tertiary); }
+
+  /* ===== 根因卡片 ===== */
+  .section { padding: 12px; }
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .rca-card {
+    background: #FFFBF0;
+    border: 1px solid #FFE4B5;
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .rca-card .rca-text {
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.6;
+  }
+
+  /* ===== 关联告警 ===== */
+  .alert-item {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .alert-item .alert-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+  .alert-item .alert-icon.firing { background: var(--danger-light); }
+  .alert-item .alert-icon.resolved { background: var(--success-light); }
+  .alert-item .alert-info { flex: 1; min-width: 0; }
+  .alert-item .alert-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .alert-item .alert-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+  .alert-item .alert-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+  .alert-status.firing { background: var(--danger-light); color: var(--danger); }
+  .alert-status.resolved-tag { background: var(--success-light); color: var(--success); }
+
+  /* ===== Timeline ===== */
+  .timeline { padding-left: 2px; }
+  .timeline-item {
+    display: flex;
+    gap: 10px;
+    padding-bottom: 16px;
+    position: relative;
+  }
+  .timeline-item:last-child { padding-bottom: 0; }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: 13px;
+    top: 28px;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .timeline-item:last-child::before { display: none; }
+
+  .timeline-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    flex-shrink: 0;
+    z-index: 1;
+  }
+  .timeline-dot.created { background: var(--primary-light); }
+  .timeline-dot.rca { background: #F0E6FF; }
+  .timeline-dot.merged { background: #E6F7FF; }
+  .timeline-dot.approval { background: var(--warning-light); }
+  .timeline-dot.action { background: #E8F8E6; }
+  .timeline-dot.check { background: #F5F6F7; }
+  .timeline-dot.resolved { background: var(--success-light); }
+  .timeline-dot.corrected { background: var(--danger-light); }
+
+  .timeline-content { flex: 1; min-width: 0; }
+  .timeline-content .tl-title {
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 2px;
+  }
+  .timeline-content .tl-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    word-break: break-all;
+  }
+  .timeline-content .tl-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 3px;
+  }
+  .timeline-content .tl-operator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: var(--bg-page);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-top: 4px;
+  }
+
+  /* ===== Action 操作按钮 ===== */
+  .action-card {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+    box-shadow: var(--shadow);
+  }
+  .action-card .action-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .action-card .action-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    background: var(--primary-light);
+  }
+  .action-card .action-info { flex: 1; min-width: 0; }
+  .action-card .action-desc {
+    font-size: 13px;
+    font-weight: 500;
+    word-break: break-all;
+  }
+  .action-card .action-meta {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+  .action-card .action-status-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+  .action-btns {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
+  .action-btn {
+    flex: 1;
+    padding: 9px 0;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+  .action-btn:active { transform: scale(0.97); }
+  .action-btn.approve {
+    background: var(--primary);
+    color: #fff;
+  }
+  .action-btn.approve:hover { background: #2860E1; }
+  .action-btn.reject {
+    background: var(--bg-page);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+  .action-btn.reject:hover { background: #ECECEC; }
+  .action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* ===== 确认弹窗 ===== */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 200;
+    justify-content: center;
+    align-items: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal-box {
+    background: var(--bg-card);
+    border-radius: 14px;
+    width: 300px;
+    overflow: hidden;
+    animation: modalPop 0.2s ease-out;
+  }
+  @keyframes modalPop {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  .modal-box .modal-body {
+    padding: 24px 20px 16px;
+    text-align: center;
+  }
+  .modal-box .modal-icon { font-size: 36px; margin-bottom: 10px; }
+  .modal-box .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .modal-box .modal-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+  .modal-box .modal-actions {
+    display: flex;
+    border-top: 1px solid var(--border);
+  }
+  .modal-box .modal-actions button {
+    flex: 1;
+    padding: 14px;
+    border: none;
+    background: none;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .modal-box .modal-actions button:first-child {
+    border-right: 1px solid var(--border);
+    color: var(--text-secondary);
+  }
+  .modal-box .modal-actions button:last-child { color: var(--primary); font-weight: 600; }
+  .modal-box .modal-actions button.danger-confirm:last-child { color: var(--danger); }
+  .modal-box .modal-actions button:hover { background: var(--bg-page); }
+
+  /* ===== Toast 提示 ===== */
+  .toast {
+    position: fixed;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    background: rgba(0,0,0,0.78);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 300;
+    opacity: 0;
+    transition: all 0.3s;
+    pointer-events: none;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ===== 空状态 ===== */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-tertiary);
+  }
+  .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-state .empty-text { font-size: 14px; }
+
+  /* ===== 底部安全区 ===== */
+  .safe-bottom { height: env(safe-area-inset-bottom, 20px); }
+
+  /* ===== 动画 ===== */
+  @keyframes slideInRight {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes slideOutRight {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(100%); opacity: 0; }
+  }
+  .slide-in { animation: slideInRight 0.25s ease-out; }
+
+  /* ===== 加载中骨架屏 ===== */
+  .skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 6px;
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  /* ===== 响应式：宽屏居中显示 ===== */
+  @media (min-width: 520px) {
+    body { max-width: 480px; margin: 0 auto; box-shadow: -1px 0 0 var(--border), 1px 0 0 var(--border); min-height: 100vh; }
+    .stats-row { gap: 8px; padding: 14px; }
+    .stat-card { padding: 12px 8px; }
+    .stat-card .number { font-size: 26px; }
+    .stat-card .label { font-size: 12px; }
+    .filter-bar { padding: 0 14px 12px; gap: 8px; }
+    .filter-chip { padding: 6px 12px; font-size: 13px; }
+    .problem-list { padding: 0 14px 80px; }
+    .problem-card { padding: 14px; }
+    .section { padding: 14px; }
+    .navbar { padding: 12px 14px; }
+    .detail-header { padding: 16px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== 列表页 ==================== -->
+<div class="list-page" id="listPage">
+  <div class="navbar">
+    <div class="title">🤖 Problem 管理</div>
+    <div class="subtitle">值班虚拟员工</div>
+  </div>
+
+  <div class="stats-row" id="statsRow"></div>
+
+  <div class="filter-bar" id="filterBar">
+    <div class="filter-chip active" data-filter="all">全部</div>
+    <div class="filter-chip" data-filter="open">🔴 未解决</div>
+    <div class="filter-chip" data-filter="pending">🟠 待执行</div>
+    <div class="filter-chip" data-filter="recovering">🟡 恢复中</div>
+    <div class="filter-chip" data-filter="resolved">🟢 已解决</div>
+  </div>
+
+  <div class="problem-list" id="problemList"></div>
+</div>
+
+<!-- ==================== 详情页 ==================== -->
+<div class="detail-page" id="detailPage">
+  <div class="navbar">
+    <button class="back-btn" style="display:flex" onclick="showList()">←</button>
+    <div class="title" id="detailNavTitle">问题详情</div>
+  </div>
+
+  <div id="detailContent"></div>
+  <div class="safe-bottom"></div>
+</div>
+
+<!-- ==================== 确认弹窗 ==================== -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-box">
+    <div class="modal-body">
+      <div class="modal-icon" id="modalIcon">⚡</div>
+      <div class="modal-title" id="modalTitle">确认执行</div>
+      <div class="modal-desc" id="modalDesc">确定要执行此止损动作吗？</div>
+    </div>
+    <div class="modal-actions" id="modalActions">
+      <button onclick="closeModal()">取消</button>
+      <button id="modalConfirmBtn" onclick="confirmAction()">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Toast 提示 ==================== -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== 配置 & 状态 ====================
+const API_BASE = window.location.origin;
+const STATUS_TEXT = { open: '未解决', pending: '待执行', recovering: '恢复中', resolved: '已解决', takeover: '已接管', silenced: '已静默' };
+const STATUS_ORDER = { open: 0, pending: 1, recovering: 2, takeover: 3, silenced: 4, resolved: 5 };
+
+let allProblems = [];
+let currentFilter = 'all';
+let currentDetailId = null;
+let pendingModalAction = null;
+
+// ==================== 工具函数 ====================
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function calcDuration(createdAt, resolvedAt) {
+  if (!createdAt || !resolvedAt) return null;
+  const diff = Math.round(resolvedAt - createdAt);
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ${diff%60}s`;
+  return `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
+}
+
+function eventTypeClass(et) {
+  const map = {
+    created: 'created', root_cause_updated: 'rca', alert_merged: 'merged',
+    action_added: 'approval', approved: 'action', rejected: 'corrected',
+    action_completed: 'action', status_changed: 'check', recovery_check: 'check',
+    takeover: 'corrected', silenced: 'check', issue_linked: 'merged'
+  };
+  return map[et] || 'created';
+}
+
+function eventTypeIcon(et) {
+  const map = {
+    created: '📝', root_cause_updated: '🧠', alert_merged: '🔗',
+    action_added: '🧾', approved: '⚡', rejected: '🚫',
+    action_completed: '✅', status_changed: '🔄', recovery_check: '📉',
+    takeover: '🙋', silenced: '🔇', issue_linked: '🔗'
+  };
+  return map[et] || '📌';
+}
+
+function eventTypeTitle(et) {
+  const map = {
+    created: '问题创建', root_cause_updated: 'RCA 分析完成', alert_merged: '告警归并',
+    action_added: '新增止损动作', approved: '审批通过', rejected: '动作已取消',
+    action_completed: '动作执行完成', status_changed: '状态变更', recovery_check: '恢复验证',
+    takeover: '人工接管', silenced: '问题静默', issue_linked: '关联 Issue'
+  };
+  return map[et] || et;
+}
+
+function formatOperator(op) {
+  if (!op) return '';
+  if (op === 'agent') return '🤖 虚拟员工';
+  return `👤 ${op}`;
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ==================== 数据请求 ====================
+
+async function fetchProblems() {
+  try {
+    const resp = await fetch(`${API_BASE}/api/problems`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    return data.problems || [];
+  } catch (e) {
+    console.error('获取问题列表失败:', e);
+    showToast('❌ 加载问题列表失败');
+    return [];
+  }
+}
+
+async function fetchProblemDetail(id) {
+  try {
+    const resp = await fetch(`${API_BASE}/api/problems/${id}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  } catch (e) {
+    console.error('获取问题详情失败:', e);
+    showToast('❌ 加载问题详情失败');
+    return null;
+  }
+}
+
+// ==================== 渲染：统计卡片 ====================
+
+function renderStats() {
+  const counts = { open: 0, pending: 0, recovering: 0, resolved: 0 };
+  allProblems.forEach(p => { if (counts[p.status] !== undefined) counts[p.status]++; });
+  const total = allProblems.length;
+
+  document.getElementById('statsRow').innerHTML = `
+    <div class="stat-card open"><div class="number">${counts.open}</div><div class="label">未解决</div></div>
+    <div class="stat-card pending"><div class="number">${counts.pending}</div><div class="label">待执行</div></div>
+    <div class="stat-card recovering"><div class="number">${counts.recovering}</div><div class="label">恢复中</div></div>
+    <div class="stat-card resolved"><div class="number">${counts.resolved}</div><div class="label">已解决</div></div>
+    <div class="stat-card total"><div class="number">${total}</div><div class="label">总计</div></div>
+  `;
+}
+
+// ==================== 渲染：列表 ====================
+
+function renderList() {
+  const list = document.getElementById('problemList');
+  let filtered = currentFilter === 'all'
+    ? [...allProblems]
+    : allProblems.filter(p => p.status === currentFilter);
+
+  filtered.sort((a, b) => {
+    const aResolved = a.status === 'resolved' ? 1 : 0;
+    const bResolved = b.status === 'resolved' ? 1 : 0;
+    if (aResolved !== bResolved) return aResolved - bResolved;
+    return (b.created_at || 0) - (a.created_at || 0);
+  });
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">暂无相关问题</div></div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(p => {
+    const alertCount = (p.alert_group_ids || []).length;
+    const pendingActions = (p.actions || []).filter(a => a.status === 'pending').length;
+    const duration = calcDuration(p.created_at, p.resolved_at);
+    return `
+      <div class="problem-card status-${p.status}" onclick="showDetail('${p.id}')">
+        <div class="header">
+          <span class="pid">${p.id}</span>
+          <span class="status-badge ${p.status}">${STATUS_TEXT[p.status] || p.status}</span>
+          ${pendingActions > 0 ? `<span style="font-size:11px;color:var(--pending);font-weight:500">⏳ ${pendingActions} 个动作待审批</span>` : ''}
+        </div>
+        <div class="problem-title">${p.title}</div>
+        <div class="meta-row">
+          <span>🕐 ${formatTime(p.created_at)}</span>
+          <span>🚨 ${alertCount} 个告警</span>
+          ${duration ? `<span>⏱ ${duration}</span>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ==================== 渲染：Action 卡片 ====================
+
+function renderActionCard(a, problemId) {
+  const statusColors = {
+    completed: 'background:#E8F8E6;color:#34C724',
+    executing: 'background:#FFF3E0;color:#FF9800',
+    pending: 'background:var(--pending-light);color:var(--pending)',
+    rejected: 'background:#F5F6F7;color:var(--text-tertiary)',
+    failed: 'background:#FFEDED;color:#F54A45'
+  };
+  const statusLabels = { completed: '已完成', executing: '执行中', pending: '待审批', rejected: '已取消', failed: '失败', approved: '已批准' };
+  const isPending = a.status === 'pending';
+
+  return `
+    <div class="action-card" id="action-card-${a.id}">
+      <div class="action-header">
+        <div class="action-icon">${isPending ? '⏳' : '🔧'}</div>
+        <div class="action-info">
+          <div class="action-desc">${a.description}</div>
+          <div class="action-meta">${a.approved_by ? '审批人: ' + a.approved_by : '等待值班人审批'}</div>
+        </div>
+        <span class="action-status-tag" style="${statusColors[a.status] || ''}">${statusLabels[a.status] || a.status}</span>
+      </div>
+      ${isPending ? `
+      <div class="action-btns">
+        <button class="action-btn reject" onclick="onActionReject('${a.id}','${problemId}')">✕ 取消</button>
+        <button class="action-btn approve" onclick="onActionApprove('${a.id}','${problemId}')">✓ 批准执行</button>
+      </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// ==================== 渲染：详情页 ====================
+
+async function renderDetail(problemId) {
+  const p = await fetchProblemDetail(problemId);
+  if (!p) return;
+  currentDetailId = problemId;
+
+  document.getElementById('detailNavTitle').textContent = p.id;
+
+  const duration = calcDuration(p.created_at, p.resolved_at);
+  const alertGroupIds = p.alert_group_ids || [];
+  const actions = p.actions || [];
+  const events = (p.events || []).sort((a, b) => a.timestamp - b.timestamp);
+
+  const pendingActions = actions.filter(a => a.status === 'pending');
+  const otherActions = actions.filter(a => a.status !== 'pending');
+
+  document.getElementById('detailContent').innerHTML = `
+    <div class="detail-header">
+      <div class="pid-status">
+        <span class="pid-large">${p.id}</span>
+        <span class="status-badge ${p.status}">${STATUS_TEXT[p.status] || p.status}</span>
+      </div>
+      <div class="detail-title">${p.title}</div>
+      <div class="detail-meta">
+        <div class="meta-item"><span class="meta-label">创建时间</span> ${formatTime(p.created_at)}</div>
+        ${p.resolved_at ? `<div class="meta-item"><span class="meta-label">解决时间</span> ${formatTime(p.resolved_at)}</div>` : ''}
+        ${duration ? `<div class="meta-item"><span class="meta-label">恢复时长</span> ${duration}</div>` : ''}
+        <div class="meta-item"><span class="meta-label">关联告警</span> ${alertGroupIds.length} 个</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🧠 根因分析</div>
+      <div class="rca-card">
+        <div class="rca-text">${p.root_cause || '尚未完成根因分析'}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🚨 关联告警 (${alertGroupIds.length})</div>
+      ${alertGroupIds.map(agId => `
+        <div class="alert-item">
+          <div class="alert-icon firing">🔔</div>
+          <div class="alert-info">
+            <div class="alert-name">${agId}</div>
+            <div class="alert-time">Alert Group ID</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    ${pendingActions.length > 0 ? `
+    <div class="section">
+      <div class="section-title">⏳ 待执行动作 (${pendingActions.length})</div>
+      ${pendingActions.map(a => renderActionCard(a, p.id)).join('')}
+    </div>
+    ` : ''}
+
+    ${otherActions.length > 0 ? `
+    <div class="section">
+      <div class="section-title">🔧 止损动作 (${otherActions.length})</div>
+      ${otherActions.map(a => renderActionCard(a, p.id)).join('')}
+    </div>
+    ` : ''}
+
+    <div class="section">
+      <div class="section-title">📋 处理时间线 (${events.length})</div>
+      <div class="timeline">
+        ${events.map(e => `
+          <div class="timeline-item">
+            <div class="timeline-dot ${eventTypeClass(e.event_type)}">${eventTypeIcon(e.event_type)}</div>
+            <div class="timeline-content">
+              <div class="tl-title">${eventTypeTitle(e.event_type)}</div>
+              <div class="tl-desc">${e.description}</div>
+              <div class="tl-time">${formatTime(e.timestamp)}</div>
+              <div class="tl-operator">${formatOperator(e.operator)}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="safe-bottom"></div>
+  `;
+}
+
+// ==================== 审批操作 ====================
+
+function onActionApprove(actionId, problemId) {
+  pendingModalAction = { actionId, problemId, type: 'approve' };
+  document.getElementById('modalIcon').textContent = '⚡';
+  document.getElementById('modalTitle').textContent = '确认批准执行';
+
+  const card = document.getElementById(`action-card-${actionId}`);
+  const desc = card ? card.querySelector('.action-desc')?.textContent : actionId;
+
+  document.getElementById('modalDesc').innerHTML = `确定要批准执行以下止损动作吗？<br><br><b>${desc}</b>`;
+  document.getElementById('modalConfirmBtn').className = '';
+  document.getElementById('modalConfirmBtn').textContent = '确认执行';
+  document.getElementById('modalOverlay').classList.add('show');
+}
+
+function onActionReject(actionId, problemId) {
+  pendingModalAction = { actionId, problemId, type: 'reject' };
+  document.getElementById('modalIcon').textContent = '🚫';
+  document.getElementById('modalTitle').textContent = '确认取消动作';
+
+  const card = document.getElementById(`action-card-${actionId}`);
+  const desc = card ? card.querySelector('.action-desc')?.textContent : actionId;
+
+  document.getElementById('modalDesc').innerHTML = `确定要取消以下止损动作吗？取消后需要重新生成方案。<br><br><b>${desc}</b>`;
+  document.getElementById('modalConfirmBtn').className = 'danger-confirm';
+  document.getElementById('modalConfirmBtn').textContent = '确认取消';
+  document.getElementById('modalOverlay').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('show');
+  pendingModalAction = null;
+}
+
+async function confirmAction() {
+  if (!pendingModalAction) return;
+  const { actionId, problemId, type } = pendingModalAction;
+  closeModal();
+
+  const endpoint = type === 'approve' ? 'approve' : 'reject';
+  try {
+    const resp = await fetch(`${API_BASE}/api/problems/${problemId}/actions/${actionId}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operator: '值班人' }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${resp.status}`);
+    }
+    const result = await resp.json();
+    showToast(type === 'approve' ? '✅ 已批准执行，正在执行止损动作...' : '🚫 已取消该止损动作');
+
+    await renderDetail(problemId);
+    await loadAndRender();
+  } catch (e) {
+    console.error('审批操作失败:', e);
+    showToast(`❌ 操作失败: ${e.message}`);
+  }
+}
+
+// ==================== 页面切换 ====================
+
+function showDetail(problemId) {
+  document.getElementById('listPage').classList.add('hidden');
+  const detailPage = document.getElementById('detailPage');
+  detailPage.classList.add('active', 'slide-in');
+  renderDetail(problemId);
+  window.scrollTo(0, 0);
+}
+
+function showList() {
+  document.getElementById('detailPage').classList.remove('active', 'slide-in');
+  document.getElementById('listPage').classList.remove('hidden');
+  currentDetailId = null;
+  window.scrollTo(0, 0);
+}
+
+// ==================== 初始化 ====================
+
+async function loadAndRender() {
+  allProblems = await fetchProblems();
+  renderStats();
+  renderList();
+}
+
+document.getElementById('filterBar').addEventListener('click', (e) => {
+  const chip = e.target.closest('.filter-chip');
+  if (!chip) return;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  currentFilter = chip.dataset.filter;
+  renderList();
+});
+
+document.getElementById('modalOverlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+loadAndRender();
+</script>
+</body>
+</html>

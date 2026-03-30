@@ -1,0 +1,463 @@
+{
+  "id_counter": 1006,
+  "problems": [
+    {
+      "id": "P-1001",
+      "title": "营销服务配置变更导致交易超时",
+      "status": "resolved",
+      "root_cause": "线上发布服务未启动，MQ 存在问题，导致 TCE 实例进程批量退出报警。营销服务 adservice 的配置变更引发下游 checkout 链路延迟从 200ms 飙升至 8s，触发交易超时告警。",
+      "alert_group_ids": [
+        "AG-2001",
+        "AG-2002",
+        "AG-2003"
+      ],
+      "message_ids": {},
+      "actions": [
+        {
+          "id": "ACT-001",
+          "description": "回滚 adservice 配置变更",
+          "status": "completed",
+          "approved_by": "张烨浩",
+          "executed_at": 1774670955.0,
+          "result": "配置已回滚至上一个稳定版本"
+        },
+        {
+          "id": "ACT-002",
+          "description": "删除 adservice 异常 Pod 触发重建",
+          "status": "completed",
+          "approved_by": "张烨浩",
+          "executed_at": 1774670985.0,
+          "result": "异常 Pod 已删除，新 Pod 启动正常"
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1774670765.0,
+          "event_type": "created",
+          "description": "收到告警「交易服务响应超时 P0」，自动创建问题 P-1001",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670782.0,
+          "event_type": "root_cause_updated",
+          "description": "根因：营销服务 adservice 配置变更导致下游交易链路延迟飙升，Trace 显示 checkout→adservice 调用 P99 延迟从 200ms 升至 8.2s",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670850.0,
+          "event_type": "alert_merged",
+          "description": "将告警「营销服务 Pod OOMKilled」(AG-2003) 归并至本问题",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670895.0,
+          "event_type": "alert_merged",
+          "description": "将告警「交易服务成功率下跌」(AG-2002) 归并至本问题",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670910.0,
+          "event_type": "action_added",
+          "description": "止损方案：回滚 adservice 配置变更 + 删除异常 Pod，已发送审批卡片",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670910.0,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670955.0,
+          "event_type": "approved",
+          "description": "止损动作「回滚 adservice 配置变更」已被 张烨浩 批准执行",
+          "operator": "张烨浩"
+        },
+        {
+          "timestamp": 1774670955.0,
+          "event_type": "approved",
+          "description": "止损动作「删除 adservice 异常 Pod 触发重建」已被 张烨浩 批准执行",
+          "operator": "张烨浩"
+        },
+        {
+          "timestamp": 1774670955.0,
+          "event_type": "status_changed",
+          "description": "所有动作已审批，进入恢复验证阶段",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774670985.0,
+          "event_type": "action_completed",
+          "description": "已完成配置回滚 + 异常 Pod 删除，进入恢复观察阶段",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774671120.0,
+          "event_type": "recovery_check",
+          "description": "第 5 次检查：AG-2001 ✅已恢复，AG-2002 ✅已恢复，AG-2003 ✅已恢复",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774671305.0,
+          "event_type": "status_changed",
+          "description": "所有关联告警已恢复，问题关闭。总恢复时长 10m9s",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774670765.0,
+      "resolved_at": 1774671305.0,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1002",
+      "title": "Redis 集群主节点故障导致缓存服务不可用",
+      "status": "recovering",
+      "root_cause": "Redis 集群 master-3 节点发生磁盘 I/O 错误，触发 failover 但 sentinel 未能及时完成选主，导致缓存读写超时。",
+      "alert_group_ids": [
+        "AG-3001",
+        "AG-3002"
+      ],
+      "message_ids": {},
+      "actions": [
+        {
+          "id": "ACT-003",
+          "description": "手动触发 Redis Sentinel failover",
+          "status": "completed",
+          "approved_by": "刘伟",
+          "executed_at": 1774833500.0,
+          "result": "Sentinel failover 执行成功，master-2 已提升为新主节点"
+        },
+        {
+          "id": "ACT-004",
+          "description": "重启 master-3 节点并检查磁盘状态",
+          "status": "executing",
+          "approved_by": "刘伟",
+          "executed_at": 1774833540.0,
+          "result": null
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1774833305.0,
+          "event_type": "created",
+          "description": "收到告警「Redis 集群主节点不可达」，自动创建问题 P-1002",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833328.0,
+          "event_type": "root_cause_updated",
+          "description": "根因：Redis master-3 节点磁盘 I/O 错误，Prometheus 指标显示 node_disk_io_time_seconds 异常飙升",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833390.0,
+          "event_type": "alert_merged",
+          "description": "将告警「缓存命中率骤降至 20%」(AG-3002) 归并至本问题",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833420.0,
+          "event_type": "action_added",
+          "description": "止损方案：手动触发 Sentinel failover + 重启故障节点",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833420.0,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833500.0,
+          "event_type": "approved",
+          "description": "止损动作「手动触发 Redis Sentinel failover」已被 刘伟 批准执行",
+          "operator": "刘伟"
+        },
+        {
+          "timestamp": 1774833500.0,
+          "event_type": "approved",
+          "description": "止损动作「重启 master-3 节点并检查磁盘状态」已被 刘伟 批准执行",
+          "operator": "刘伟"
+        },
+        {
+          "timestamp": 1774833500.0,
+          "event_type": "status_changed",
+          "description": "所有动作已审批，进入恢复验证阶段",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833540.0,
+          "event_type": "action_completed",
+          "description": "Sentinel failover 执行成功，master-2 已提升为新主节点",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774833720.0,
+          "event_type": "recovery_check",
+          "description": "第 3 次检查：AG-3001 ⏳检查中，AG-3002 ⏳检查中，等待缓存预热完成",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774833305.0,
+      "resolved_at": null,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1003",
+      "title": "支付网关 TLS 证书过期导致支付失败",
+      "status": "pending",
+      "root_cause": "支付网关 payment-gateway 的 TLS 证书于 2026-03-30 00:00 过期，未提前告警，导致所有 HTTPS 连接被拒绝。",
+      "alert_group_ids": [
+        "AG-4001"
+      ],
+      "message_ids": {},
+      "actions": [
+        {
+          "id": "ACT-007",
+          "description": "更新 payment-gateway TLS 证书并重新部署",
+          "status": "pending",
+          "approved_by": null,
+          "executed_at": null,
+          "result": null
+        },
+        {
+          "id": "ACT-008",
+          "description": "重启 payment-gateway 全部 Pod",
+          "status": "pending",
+          "approved_by": null,
+          "executed_at": null,
+          "result": null
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1774837808.0,
+          "event_type": "created",
+          "description": "收到告警「支付服务 5xx 错误率 > 50%」，自动创建问题 P-1003",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774837845.0,
+          "event_type": "root_cause_updated",
+          "description": "根因：payment-gateway TLS 证书过期（过期时间 2026-03-30 00:00:00 UTC），Loki 日志显示大量 'certificate has expired' 错误",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774837860.0,
+          "event_type": "action_added",
+          "description": "止损方案：更新 TLS 证书 + 重启 payment-gateway Pod，已发送审批卡片，等待值班人确认",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774837860.0,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774837808.0,
+      "resolved_at": null,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1004",
+      "title": "数据库慢查询导致订单列表页加载超时",
+      "status": "resolved",
+      "root_cause": "orderservice 的订单列表查询缺少索引，当数据量超过 100 万后，全表扫描导致 P99 延迟从 500ms 飙升至 12s。",
+      "alert_group_ids": [
+        "AG-5001"
+      ],
+      "message_ids": {},
+      "actions": [
+        {
+          "id": "ACT-005",
+          "description": "添加 orders 表 user_id+created_at 复合索引",
+          "status": "completed",
+          "approved_by": "朱永泰",
+          "executed_at": 1774599900.0,
+          "result": "索引添加完成，P99 延迟降至 380ms"
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1774599605.0,
+          "event_type": "created",
+          "description": "收到告警「订单服务 P99 延迟 > 5s」",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774599630.0,
+          "event_type": "root_cause_updated",
+          "description": "根因：orders 表缺少 user_id+created_at 复合索引，Tempo 链路显示 DB 查询耗时 11.8s",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774599660.0,
+          "event_type": "action_added",
+          "description": "止损方案：在线添加复合索引（Online DDL）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774599660.0,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774599900.0,
+          "event_type": "approved",
+          "description": "止损动作「添加 orders 表 user_id+created_at 复合索引」已被 朱永泰 批准执行",
+          "operator": "朱永泰"
+        },
+        {
+          "timestamp": 1774599900.0,
+          "event_type": "status_changed",
+          "description": "所有动作已审批，进入恢复验证阶段",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774600080.0,
+          "event_type": "recovery_check",
+          "description": "AG-5001 ✅已恢复，P99 延迟降至 380ms",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774600200.0,
+          "event_type": "status_changed",
+          "description": "告警已恢复，问题关闭",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774599605.0,
+      "resolved_at": 1774600200.0,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1005",
+      "title": "K8s 节点 NotReady 导致多服务 Pod 被驱逐",
+      "status": "resolved",
+      "root_cause": "worker-node-03 内存耗尽（OOM），kubelet 上报 NotReady，该节点上的 12 个 Pod 被驱逐并触发重调度。",
+      "alert_group_ids": [
+        "AG-6001",
+        "AG-6002",
+        "AG-6003"
+      ],
+      "message_ids": {},
+      "actions": [
+        {
+          "id": "ACT-006",
+          "description": "手动 drain worker-node-03 并重启",
+          "status": "completed",
+          "approved_by": "张烨浩",
+          "executed_at": 1774486080.0,
+          "result": "worker-node-03 已 drain 并重启，节点状态恢复 Ready"
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1774485905.0,
+          "event_type": "created",
+          "description": "收到告警「K8s 节点 NotReady」",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774485925.0,
+          "event_type": "root_cause_updated",
+          "description": "根因：worker-node-03 内存耗尽，Prometheus 显示 node_memory_MemAvailable_bytes = 0",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774485960.0,
+          "event_type": "alert_merged",
+          "description": "归并「多服务 Pod 重启次数异常」(AG-6002)",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486020.0,
+          "event_type": "alert_merged",
+          "description": "归并「frontend 服务可用性下降」(AG-6003)",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486050.0,
+          "event_type": "action_added",
+          "description": "止损方案：手动 drain worker-node-03 并重启",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486050.0,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486080.0,
+          "event_type": "approved",
+          "description": "止损动作「手动 drain worker-node-03 并重启」已被 张烨浩 批准执行",
+          "operator": "张烨浩"
+        },
+        {
+          "timestamp": 1774486080.0,
+          "event_type": "status_changed",
+          "description": "所有动作已审批，进入恢复验证阶段",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486080.0,
+          "event_type": "action_completed",
+          "description": "drain + 重启 worker-node-03 完成",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774486500.0,
+          "event_type": "status_changed",
+          "description": "所有告警恢复，问题关闭。恢复时长 10m",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774485905.0,
+      "resolved_at": 1774486500.0,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1006",
+      "title": "Kafka 消费组 lag 持续增长导致消息积压",
+      "status": "open",
+      "root_cause": "consumer-group-order 消费能力不足，Kafka topic order-events 的 lag 从 0 飙升至 50 万+，疑似消费者线程死锁。",
+      "alert_group_ids": [
+        "AG-7001"
+      ],
+      "message_ids": {},
+      "actions": [],
+      "events": [
+        {
+          "timestamp": 1774839905.0,
+          "event_type": "created",
+          "description": "收到告警「Kafka 消费 lag > 10 万」，自动创建问题 P-1006",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1774839930.0,
+          "event_type": "root_cause_updated",
+          "description": "正在分析根因，查询 Prometheus 消费者指标和 Loki 消费者日志...",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1774839905.0,
+      "resolved_at": null,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    }
+  ]
+}

@@ -8,6 +8,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py /app/server.py
 COPY feishu_api.py /app/feishu_api.py
+COPY problem_manager.py /app/problem_manager.py
+COPY init_mock_data.py /app/init_mock_data.py
+COPY static/ /app/static/
+
+RUN mkdir -p /app/data
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

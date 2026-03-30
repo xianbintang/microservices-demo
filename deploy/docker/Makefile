@@ -8,11 +8,15 @@ deploy:
 	ssh $(REMOTE) 'mkdir -p $(REMOTE_DIR)/prometheus \
 	  $(REMOTE_DIR)/loki \
 	  $(REMOTE_DIR)/tempo \
-	  $(REMOTE_DIR)/alarm-service'
-	mkdir -p ./alarm-service
+	  $(REMOTE_DIR)/alarm-service/static \
+	  $(REMOTE_DIR)/alarm-service/data'
+	mkdir -p ./alarm-service/static
 	cp ../../src/alarm-service/server.py ./alarm-service/server.py
 	cp ../../src/alarm-service/Dockerfile ./alarm-service/Dockerfile
 	cp ../../src/alarm-service/requirements.txt ./alarm-service/requirements.txt
+	cp ../../src/alarm-service/problem_manager.py ./alarm-service/problem_manager.py
+	cp ../../src/alarm-service/init_mock_data.py ./alarm-service/init_mock_data.py
+	cp ../../src/alarm-service/static/problem.html ./alarm-service/static/problem.html
 	cp ../../.trae/skills/feishu-messenger/feishu_api.py ./alarm-service/feishu_api.py
 	cp ../../.env ./alarm-service/.env
 	@echo "==> 部署前自动备份 Grafana（如果正在运行）..."
