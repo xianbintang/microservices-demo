@@ -26,6 +26,8 @@
 import json
 import sys
 import time
+import threading
+import uuid
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -47,6 +49,40 @@ _REFRESH_THRESHOLD = 600
 
 # .env 中默认群聊 ID 的变量名
 _DEFAULT_CHAT_ID_KEY = "feishu_chat_id"
+
+# ---- 审批卡片全局状态 ----
+# approval_id -> {"approved": bool, "operator_open_id": str, "timestamp": float}
+# 由卡片按钮回调写入，wait_approval() 轮询读取
+_approval_results: dict[str, dict] = {}
+_approval_lock = threading.Lock()
+
+# 审批结果最大保留条数（防止内存泄漏）
+_APPROVAL_MAX_SIZE = 500
+
+# 审批等待默认超时（秒）— 30 分钟
+_APPROVAL_DEFAULT_TIMEOUT = 1800
+
+
+def _set_approval_result(approval_id: str, approved: bool, operator_open_id: str = "unknown"):
+    """
+    记录审批结果（线程安全）。
+    由卡片交互回调调用——无论是 HTTP 回调还是 WebSocket 长连接回调都可以调用此函数。
+    """
+    with _approval_lock:
+        if len(_approval_results) >= _APPROVAL_MAX_SIZE:
+            oldest_key = next(iter(_approval_results))
+            del _approval_results[oldest_key]
+        _approval_results[approval_id] = {
+            "approved": approved,
+            "operator_open_id": operator_open_id,
+            "timestamp": time.time(),
+        }
+
+
+def _get_approval_result(approval_id: str) -> dict | None:
+    """查询审批结果（线程安全）。返回 None 表示尚未有人操作。"""
+    with _approval_lock:
+        return _approval_results.get(approval_id)
 
 
 def _find_env_file() -> Path:
@@ -603,6 +639,257 @@ def get_message(message_id: str) -> dict:
 
 
 # ============================================================
+# 8. 审批卡片：发送 → 等待用户确认/拒绝 → 返回结果
+# ============================================================
+
+def build_approval_card(title: str, description: str, approval_id: str,
+                        risk_level: str = "high") -> dict:
+    """
+    构建审批确认卡片 JSON。
+
+    参数:
+        title:       操作标题（如 "重启生产环境 Pod"）
+        description: 操作详情（如 "将重启 payment-service 的 3 个副本，预计中断 30s"）
+        approval_id: 唯一审批 ID，用于匹配回调结果
+        risk_level:  风险等级 high / medium / low，影响卡片颜色
+    返回:
+        卡片 JSON dict
+    """
+    color_map = {"high": "red", "medium": "orange", "low": "blue"}
+    emoji_map = {"high": "🔴", "medium": "🟡", "low": "🔵"}
+    color = color_map.get(risk_level, "orange")
+    emoji = emoji_map.get(risk_level, "🟡")
+    risk_label = {"high": "高风险", "medium": "中风险", "low": "低风险"}.get(risk_level, risk_level)
+
+    header = {
+        "template": color,
+        "title": {"tag": "plain_text", "content": f"{emoji} [待审批] {title}"},
+    }
+
+    elements = [
+        {"tag": "markdown", "content": f"**操作说明**：{description}"},
+        {"tag": "hr"},
+        {
+            "tag": "column_set", "flex_mode": "bisect",
+            "columns": [
+                {
+                    "tag": "column", "width": "weighted", "weight": 1,
+                    "elements": [{"tag": "markdown", "content": f"**风险等级**：{risk_label}"}],
+                },
+                {
+                    "tag": "column", "width": "weighted", "weight": 1,
+                    "elements": [{"tag": "markdown", "content": f"**审批ID**：`{approval_id[:8]}...`"}],
+                },
+            ],
+        },
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "⚠️ 请确认是否允许执行上述操作："},
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "✅ 确认执行"},
+                    "type": "primary",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "approval_confirm",
+                        "approval_id": approval_id,
+                    }}],
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "❌ 拒绝"},
+                    "type": "danger",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "approval_reject",
+                        "approval_id": approval_id,
+                    }}],
+                },
+            ],
+        },
+        {"tag": "note", "elements": [{"tag": "plain_text", "content": "由 AI Agent 发起 · 等待人工审批"}]},
+    ]
+
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": header,
+        "elements": elements,
+    }
+
+
+def _build_approval_result_card(title: str, description: str, approval_id: str,
+                                approved: bool, operator_id: str = "unknown") -> dict:
+    """构建审批完成后的更新卡片（替换原卡片内容，显示审批结果）。"""
+    if approved:
+        color, emoji, status_text = "green", "✅", "已批准"
+    else:
+        color, emoji, status_text = "red", "❌", "已拒绝"
+
+    header = {
+        "template": color,
+        "title": {"tag": "plain_text", "content": f"{emoji} [{status_text}] {title}"},
+    }
+    elements = [
+        {"tag": "markdown", "content": f"**操作说明**：{description}"},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": f"**审批结果**：{status_text}"},
+        {"tag": "markdown", "content": f"**操作人**：{operator_id}"},
+        {"tag": "markdown", "content": f"**审批ID**：`{approval_id[:8]}...`"},
+        {"tag": "note", "elements": [{"tag": "plain_text", "content": "由 AI Agent 发起 · 审批已完成"}]},
+    ]
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": header,
+        "elements": elements,
+    }
+
+
+def handle_approval_callback(action_type: str, approval_id: str,
+                             operator_open_id: str = "unknown") -> str:
+    """
+    处理审批卡片的回调（供外部的回调处理器调用）。
+
+    参数:
+        action_type:      "approval_confirm" 或 "approval_reject"
+        approval_id:      审批 ID
+        operator_open_id: 操作人 open_id
+    返回:
+        toast 消息文本
+    """
+    if action_type == "approval_confirm":
+        _set_approval_result(approval_id, approved=True, operator_open_id=operator_open_id)
+        return "✅ 已批准，操作将继续执行"
+    elif action_type == "approval_reject":
+        _set_approval_result(approval_id, approved=False, operator_open_id=operator_open_id)
+        return "❌ 已拒绝，操作已取消"
+    else:
+        return f"未知操作: {action_type}"
+
+
+def send_approval_card(title: str, description: str, chat_id: str = None,
+                       risk_level: str = "high", approval_id: str = None) -> dict:
+    """
+    发送审批确认卡片。
+
+    参数:
+        title:       操作标题
+        description: 操作详情说明
+        chat_id:     群聊 ID；为 None 时使用 .env 默认值
+        risk_level:  风险等级 high / medium / low
+        approval_id: 自定义审批 ID；为 None 时自动生成 UUID
+    返回:
+        dict 包含 approval_id 和 message_id:
+        {"approval_id": "xxx", "message_id": "om_xxx", "raw_response": {...}}
+    """
+    if not approval_id:
+        approval_id = str(uuid.uuid4())
+
+    card = build_approval_card(title, description, approval_id, risk_level)
+    resp = send_card(chat_id, card)
+    message_id = resp.get("data", {}).get("message_id", "")
+
+    return {
+        "approval_id": approval_id,
+        "message_id": message_id,
+        "raw_response": resp,
+    }
+
+
+def wait_approval(approval_id: str, timeout: int = None,
+                  poll_interval: float = 1.0,
+                  message_id: str = None, title: str = "",
+                  description: str = "") -> dict:
+    """
+    阻塞等待审批结果（轮询内存中的审批状态）。
+
+    参数:
+        approval_id:   审批 ID
+        timeout:       超时秒数，默认 _APPROVAL_DEFAULT_TIMEOUT (300s)
+        poll_interval: 轮询间隔秒数
+        message_id:    卡片消息 ID（可选，审批完成后用于更新卡片状态）
+        title:         原始操作标题（可选，更新卡片时使用）
+        description:   原始操作描述（可选，更新卡片时使用）
+    返回:
+        dict:
+          {"approved": True/False,
+           "operator_open_id": "ou_xxx",
+           "timed_out": False,
+           "timestamp": 1234567890.0}
+        超时时:
+          {"approved": False, "timed_out": True, "operator_open_id": "", "timestamp": ...}
+    """
+    if timeout is None:
+        timeout = _APPROVAL_DEFAULT_TIMEOUT
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = _get_approval_result(approval_id)
+        if result is not None:
+            # 审批已完成，尝试更新卡片状态
+            if message_id:
+                try:
+                    updated_card = _build_approval_result_card(
+                        title or "操作审批", description or "",
+                        approval_id, result["approved"],
+                        result.get("operator_open_id", "unknown"),
+                    )
+                    update_card(message_id, updated_card)
+                except Exception:
+                    pass  # 更新卡片失败不影响审批结果
+            return {
+                "approved": result["approved"],
+                "operator_open_id": result.get("operator_open_id", ""),
+                "timed_out": False,
+                "timestamp": result.get("timestamp", 0),
+            }
+        time.sleep(poll_interval)
+
+    # 超时：标记为拒绝
+    timeout_result = {
+        "approved": False,
+        "operator_open_id": "",
+        "timed_out": True,
+        "timestamp": time.time(),
+    }
+    if message_id:
+        try:
+            updated_card = _build_approval_result_card(
+                title or "操作审批", description or "",
+                approval_id, False, "系统超时",
+            )
+            update_card(message_id, updated_card)
+        except Exception:
+            pass
+    return timeout_result
+
+
+def send_approval_and_wait(title: str, description: str, chat_id: str = None,
+                           risk_level: str = "high", timeout: int = None) -> dict:
+    """
+    一站式审批：发送审批卡片 → 阻塞等待用户操作 → 返回审批结果。
+
+    这是给 Agent / CLI 使用的最简单的入口。
+
+    参数:
+        title:       操作标题
+        description: 操作详情说明
+        chat_id:     群聊 ID
+        risk_level:  风险等级 high / medium / low
+        timeout:     等待超时秒数
+    返回:
+        dict: {"approved": bool, "timed_out": bool, "operator_open_id": str, ...}
+    """
+    send_result = send_approval_card(title, description, chat_id, risk_level)
+    approval_id = send_result["approval_id"]
+    message_id = send_result["message_id"]
+
+    return wait_approval(
+        approval_id, timeout=timeout,
+        message_id=message_id, title=title, description=description,
+    )
+
+
+# ============================================================
 # CLI 入口：支持命令行直接调用
 # ============================================================
 
@@ -627,12 +914,16 @@ def _cli():
     python3 feishu_api.py members [chat_id]
     python3 feishu_api.py find_member [chat_id] <name>
     python3 feishu_api.py get_message <message_id>
+    python3 feishu_api.py send_approval [chat_id] <title> <description> [risk_level] [timeout]
+    python3 feishu_api.py send_approval_only [chat_id] <title> <description> [risk_level]
+    python3 feishu_api.py approval_result <approval_id> <confirm|reject> [operator_id]
     """
     all_commands = [
         "token", "send", "send_card", "reply", "reply_thread",
         "reply_at", "reply_thread_at", "update_card", "at",
         "urgent_app", "urgent_phone", "urgent_sms",
         "history", "members", "find_member", "get_message",
+        "send_approval", "send_approval_only", "approval_result",
     ]
 
     if len(sys.argv) < 2:
@@ -748,6 +1039,61 @@ def _cli():
             mid = sys.argv[2]
             msg = get_message(mid)
             print(json.dumps(msg, indent=2, ensure_ascii=False))
+
+        elif cmd == "send_approval" and len(sys.argv) >= 4:
+            # send_approval [chat_id] <title> <description> [risk_level] [timeout]
+            args = sys.argv[2:]
+            chat_id = None
+            if _is_chat_id(args[0]):
+                chat_id = args.pop(0)
+            if len(args) < 2:
+                print("[ERROR] send_approval 至少需要 <title> 和 <description>")
+                return
+            a_title = args[0]
+            a_desc = args[1]
+            a_risk = args[2] if len(args) >= 3 else "high"
+            a_timeout = int(args[3]) if len(args) >= 4 else None
+            print(f"[INFO] 正在发送审批卡片: title={a_title}, risk={a_risk}")
+            result = send_approval_and_wait(
+                a_title, a_desc, chat_id, risk_level=a_risk, timeout=a_timeout
+            )
+            if result.get("timed_out"):
+                print(f"[TIMEOUT] 审批超时未响应，操作已自动拒绝")
+            elif result.get("approved"):
+                print(f"[APPROVED] 审批已通过，操作人: {result.get('operator_open_id', 'unknown')}")
+            else:
+                print(f"[REJECTED] 审批被拒绝，操作人: {result.get('operator_open_id', 'unknown')}")
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+
+        elif cmd == "send_approval_only" and len(sys.argv) >= 4:
+            # send_approval_only [chat_id] <title> <description> [risk_level]
+            args = sys.argv[2:]
+            chat_id = None
+            if _is_chat_id(args[0]):
+                chat_id = args.pop(0)
+            if len(args) < 2:
+                print("[ERROR] send_approval_only 至少需要 <title> 和 <description>")
+                return
+            a_title = args[0]
+            a_desc = args[1]
+            a_risk = args[2] if len(args) >= 3 else "high"
+            result = send_approval_card(a_title, a_desc, chat_id, risk_level=a_risk)
+            print(f"[OK] approval_id={result['approval_id']}, message_id={result['message_id']}")
+
+        elif cmd == "approval_result" and len(sys.argv) >= 4:
+            # approval_result <approval_id> <confirm|reject> [operator_id]
+            a_id = sys.argv[2]
+            a_action_raw = sys.argv[3].lower()
+            a_operator = sys.argv[4] if len(sys.argv) >= 5 else "cli_user"
+            if a_action_raw in ("confirm", "approve", "yes"):
+                a_action = "approval_confirm"
+            elif a_action_raw in ("reject", "deny", "no"):
+                a_action = "approval_reject"
+            else:
+                print(f"[ERROR] 未知操作: {a_action_raw}，请使用 confirm 或 reject")
+                return
+            toast = handle_approval_callback(a_action, a_id, a_operator)
+            print(f"[OK] {toast}")
 
         else:
             print(f"未知命令或参数不足: {cmd}")

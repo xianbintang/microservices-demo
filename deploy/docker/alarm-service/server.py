@@ -61,6 +61,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alarm-service")
 
+# --- 机器人自身 open_id（启动时自动获取，用于判断消息是否 @了机器人）---
+_BOT_OPEN_ID: str = ""
+
+
+def _fetch_bot_open_id() -> str:
+    """
+    通过飞书 API 获取机器人自身的 open_id。
+    接口: GET /open-apis/bot/v3/info/
+    需要 tenant_access_token，由 feishu_api.get_token() 提供。
+    失败时返回空字符串并打印警告日志（不影响主流程启动）。
+    """
+    try:
+        token = feishu_api.get_token()
+        url = "https://open.feishu.cn/open-apis/bot/v3/info/"
+        req = urllib.request.Request(url, method="GET", headers={
+            "Authorization": f"Bearer {token}",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("code") != 0:
+            logger.warning("获取机器人信息失败: code=%s, msg=%s", data.get("code"), data.get("msg"))
+            return ""
+        open_id = data.get("bot", {}).get("open_id", "")
+        if open_id:
+            logger.info("获取机器人 open_id 成功: %s", open_id[:12] + "***")
+        else:
+            logger.warning("机器人信息中无 open_id，@检测将不可用")
+        return open_id
+    except Exception as e:
+        logger.warning("获取机器人 open_id 异常（不影响主流程）: %s", e)
+        return ""
+
+
 # --- 告警消息缓存（message_id -> alert 信息映射）---
 _alert_message_cache: dict[str, dict] = {}
 _CACHE_MAX_SIZE = 1000
@@ -443,6 +476,18 @@ def _do_card_action_trigger(data: P2CardActionTrigger) -> P2CardActionTriggerRes
     action_type = value.get("action", "")
     alert_group_id = value.get("alert_group_id", "")
 
+    # ---- 审批卡片回调（approval_confirm / approval_reject）----
+    approval_id = value.get("approval_id", "")
+    if action_type in ("approval_confirm", "approval_reject") and approval_id:
+        toast_text = feishu_api.handle_approval_callback(action_type, approval_id, open_id)
+        logger.info(
+            "审批卡片回调: action=%s, approval_id=%s, operator=%s",
+            action_type, approval_id, open_id,
+        )
+        return P2CardActionTriggerResponse(
+            {"toast": {"type": "success" if "批准" in toast_text else "info", "content": toast_text}}
+        )
+
     if not alert_group_id:
         logger.warning("卡片回调缺少 alert_group_id: tag=%s, value=%s", tag, value)
         return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "缺少告警 ID"}})
@@ -500,9 +545,58 @@ def _do_card_action_trigger(data: P2CardActionTrigger) -> P2CardActionTriggerRes
         )
 
 
+def _is_bot_mentioned(message) -> bool:
+    """
+    检查消息是否 @了机器人。
+    MentionEvent.id 类型是 UserId 对象（含 open_id/user_id/union_id），
+    需要用 mention.id.open_id 与 _BOT_OPEN_ID 比对。
+    如果 _BOT_OPEN_ID 未获取到（为空），则回退为不匹配，避免误触发。
+    """
+    global _BOT_OPEN_ID
+    if not _BOT_OPEN_ID:
+        logger.debug("_BOT_OPEN_ID 为空，跳过 @检测")
+        return False
+
+    mentions = getattr(message, 'mentions', None)
+    if not mentions:
+        logger.debug("消息无 mentions 字段，message_id=%s", getattr(message, 'message_id', '?'))
+        return False
+
+    for mention in mentions:
+        user_id_obj = getattr(mention, 'id', None)
+        if user_id_obj is None:
+            continue
+        mention_open_id = getattr(user_id_obj, 'open_id', None)
+        mention_key = getattr(mention, 'key', None)
+        mention_name = getattr(mention, 'name', None)
+        logger.info(
+            "@检测: mention.open_id=%s, mention.key=%s, mention.name=%s, bot_open_id=%s, match=%s",
+            mention_open_id, mention_key, mention_name, _BOT_OPEN_ID,
+            mention_open_id == _BOT_OPEN_ID if mention_open_id else False
+        )
+        if mention_open_id and mention_open_id == _BOT_OPEN_ID:
+            return True
+
+    return False
+
+
+def _strip_mention_placeholders(text: str) -> str:
+    """
+    去除消息文本中的 @_user_N 占位符（如 "@_user_1"），只保留用户真正输入的内容。
+    飞书消息中 @人 会以 @_user_1 这样的占位符出现在 text 里。
+    """
+    import re
+    return re.sub(r'@_user_\d+\s*', '', text).strip()
+
+
 def _do_message_receive(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
     """
     飞书群消息事件处理函数（通过 WebSocket 长连接接收）。
+
+    回复策略：
+      1. 在告警卡片话题中的回复（parent_id 命中缓存）→ 不需要 @，直接回复
+      2. 普通群消息 → 只有明确 @机器人 时才回复
+      3. 机器人自身发的消息 → 忽略
     """
     event = data.event
     if not event or not event.message:
@@ -539,22 +633,28 @@ def _do_message_receive(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
 
     parent_id = message.parent_id or ""
     alert_context = _alert_message_cache.get(parent_id)
+    bot_mentioned = _is_bot_mentioned(message)
+
+    if not bot_mentioned:
+        logger.debug("消息未@机器人，忽略: message_id=%s", message_id)
+        return
+
+    clean_text = _strip_mention_placeholders(text)
 
     if alert_context:
         reply_text = (
             f"📋 已收到你对告警 **{alert_context['alert_name']}** 的回复。\n"
             f"告警状态: {alert_context['status']}\n"
-            f"你的消息: {text}\n\n"
+            f"你的消息: {clean_text}\n\n"
             f"（值班虚拟员工已记录，后续将自动分析并给出处置建议）"
         )
     else:
         reply_text = (
-            f"👋 已收到消息: {text}\n\n"
+            f"👋 已收到消息: {clean_text}\n\n"
             f"（值班虚拟员工在线，如需处理告警请直接回复告警卡片消息）"
         )
 
     try:
-        # 使用话题回复（reply_in_thread），让回复以话题形式挂在原消息下方
         resp = feishu_api.reply_in_thread(message_id, reply_text)
         reply_msg_id = resp.get("data", {}).get("message_id", "")
         logger.info("已话题回复消息: original=%s, reply=%s", message_id, reply_msg_id)
@@ -764,6 +864,10 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    global _BOT_OPEN_ID
+    # 启动时获取机器人自身 open_id（用于 @检测）
+    _BOT_OPEN_ID = _fetch_bot_open_id()
+
     # 在后台线程启动飞书 WebSocket 长连接（接收卡片交互 + 群消息回调）
     ws_thread = threading.Thread(target=_start_feishu_ws_client, daemon=True, name="feishu-ws")
     ws_thread.start()

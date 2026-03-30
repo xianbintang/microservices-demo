@@ -1,6 +1,6 @@
 ---
 name: "feishu-messenger"
-description: "Send, reply, edit Feishu/Lark messages with auto-auth. Invoke when user wants to send messages, reply, urgent notify, or interact with Feishu chats."
+description: "Send, reply, edit Feishu/Lark messages with auto-auth. Invoke when user wants to send messages, reply, urgent notify, or interact with Feishu chats. Supports sending approval cards for dangerous operations that require user confirmation before execution."
 ---
 
 # Feishu Messenger Skill
@@ -70,6 +70,10 @@ feishu_chat_id=oc_xxxxxxxxxxxx
 | 获取单条消息 | `get_message(message_id)` | `get_message <mid>` | 获取消息详情 |
 | 获取默认群聊 | `get_default_chat_id()` | — | 从 .env 读取默认群聊 ID |
 | 获取 Token | `get_token()` | `token` | 手动获取当前 token |
+| **发送审批卡片（一站式）** | `send_approval_and_wait(title, desc, ...)` | `send_approval [chat_id] <title> <desc> [risk] [timeout]` | **发送审批卡片并阻塞等待用户确认/拒绝** |
+| 发送审批卡片（仅发送） | `send_approval_card(title, desc, ...)` | `send_approval_only [chat_id] <title> <desc> [risk]` | 仅发送审批卡片，不等待结果 |
+| 审批回调处理 | `handle_approval_callback(action, id, oid)` | `approval_result <id> <confirm\|reject>` | 手动写入审批结果 |
+| 等待审批结果 | `wait_approval(approval_id, ...)` | — | 轮询等待审批结果（配合 send_approval_card 使用） |
 
 > `[chat_id]` 表示可选参数，省略时自动使用 `.env` 中的 `feishu_chat_id`。
 
@@ -121,6 +125,15 @@ python3 $SKILL_PATH history
 
 # 获取当前 token
 python3 $SKILL_PATH token
+
+# 发送审批卡片并等待用户确认（阻塞直到用户操作或超时）
+python3 $SKILL_PATH send_approval "重启 payment-service" "将重启 3 个副本" high 300
+
+# 仅发送审批卡片（不等待，返回 approval_id）
+python3 $SKILL_PATH send_approval_only "清理缓存" "清理 Redis 过期数据" low
+
+# 手动写入审批结果（测试/调试用）
+python3 $SKILL_PATH approval_result <approval_id> confirm
 ```
 
 ### 方式二：Python 代码调用
@@ -185,6 +198,75 @@ card["elements"].insert(-1, {
 })
 update_card(msg_id, card)
 ```
+
+### 方式四：审批卡片（危险操作确认）
+
+当 Agent 需要执行危险操作（如重启服务、删除数据、修改配置等）时，应先发送审批卡片到飞书群让用户确认。
+
+**一站式用法（推荐，CLI 命令）：**
+
+```bash
+SKILL_PATH=".trae/skills/feishu-messenger/feishu_api.py"
+
+# 发送审批卡片并阻塞等待用户操作（默认超时 300 秒）
+# 返回: [APPROVED] / [REJECTED] / [TIMEOUT]
+python3 $SKILL_PATH send_approval "重启 payment-service" "将重启生产环境 payment-service 的 3 个副本，预计服务中断约 30 秒" high 300
+
+# 低风险操作示例
+python3 $SKILL_PATH send_approval "清理过期缓存" "将清理 Redis 中超过 7 天的过期 session 缓存" low
+```
+
+**一站式用法（Python）：**
+
+```python
+from feishu_api import send_approval_and_wait
+
+result = send_approval_and_wait(
+    title="重启 payment-service",
+    description="将重启生产环境 payment-service 的 3 个副本，预计服务中断约 30 秒",
+    risk_level="high",   # high / medium / low
+    timeout=300,          # 等待超时秒数
+)
+
+if result["approved"]:
+    print("用户已批准，继续执行操作...")
+elif result["timed_out"]:
+    print("超时未响应，操作已取消")
+else:
+    print("用户已拒绝，操作已取消")
+```
+
+**分步用法（仅发送卡片，稍后查询结果）：**
+
+```python
+from feishu_api import send_approval_card, wait_approval
+
+# 步骤 1：发送审批卡片
+send_result = send_approval_card(
+    title="删除旧数据",
+    description="将删除 orders 表中 2024 年之前的归档数据（约 500 万行）",
+    risk_level="high",
+)
+approval_id = send_result["approval_id"]
+message_id = send_result["message_id"]
+
+# 步骤 2：等待审批结果
+result = wait_approval(
+    approval_id,
+    timeout=600,
+    message_id=message_id,
+    title="删除旧数据",
+    description="将删除 orders 表中 2024 年之前的归档数据",
+)
+```
+
+**审批卡片特性：**
+
+- 卡片包含：操作标题、操作详情说明、风险等级标识、「✅ 确认执行」和「❌ 拒绝」按钮
+- 用户点击按钮后，卡片自动更新为审批结果状态（绿色=已批准，红色=已拒绝）
+- 超时未操作自动标记为拒绝，卡片更新显示"系统超时"
+- 审批结果包含操作人 open_id，可用于审计追踪
+- 风险等级影响卡片颜色：high=红色、medium=橙色、low=蓝色
 
 ## 鉴权机制
 

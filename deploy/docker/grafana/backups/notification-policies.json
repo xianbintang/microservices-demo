@@ -1,8 +1,10 @@
 {
-    "receiver": "SendtoFeishu",
+    "receiver": "OnCall",
     "group_by": [
-        "grafana_folder",
-        "alertname"
+        "alertname",
+        "service"
     ],
-    "provenance": "api"
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
 }
