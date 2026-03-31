@@ -513,7 +513,7 @@ def run_demo():
     _wait(2, "Agent 检测到新告警...")
 
     _pause("🤖 Agent 回复并发出分析卡片")
-    _reply(_msg_ids["alert_a"], "🤖 收到，开始分析。")
+    _reply(_msg_ids["alert_a"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
 
     _wait(2)
 
@@ -548,7 +548,7 @@ def run_demo():
     _wait(2)
 
     _reply(_msg_ids["alert_b"],
-           "🤖 收到，开始分析。")
+           "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
 
     _wait(4, "Agent 继续分析告警A...")
 
@@ -616,7 +616,7 @@ def run_demo():
 
     _wait(2)
 
-    _reply(_msg_ids["alert_c"], "🤖 收到，开始分析。")
+    _reply(_msg_ids["alert_c"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
 
     _wait(2)
 

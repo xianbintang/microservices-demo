@@ -549,7 +549,7 @@ def run_demo():
 
     # Agent 简短回复 + 发分析卡片
     _pause("🤖 Agent 回复并发出分析卡片")
-    _reply(_msg_ids["alert_a"], "🤖 收到，开始分析。")
+    _reply(_msg_ids["alert_a"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
 
     _wait(2)
 
@@ -773,7 +773,7 @@ def run_demo():
 
     _wait(2)
 
-    _reply(_msg_ids["alert_b"], "🤖 收到，开始分析。")
+    _reply(_msg_ids["alert_b"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
 
     _wait(2)
 
