@@ -10,6 +10,11 @@
   Act 3: 新告警 Agent 分析卡住 → 主动求助 → 值班人告知已知问题 → 静默
   Act 4: 恢复验证不彻底 → 值班人决定接管
 
+交互特点：
+  - Agent 分析以卡片形式呈现，支持展开/收起查看分析过程
+  - 分析完成后卡片原地更新为结论
+  - 消息精简，不冗长
+
 用法：
   python3 mock_demo_realistic.py                   # 标准模式（约 3-4 分钟）
   python3 mock_demo_realistic.py --duration 300    # 指定总时长 5 分钟
@@ -59,7 +64,7 @@ import feishu_api
 # 参数解析与时间配置
 # ============================================================
 
-_BASE_TOTAL_SECONDS = 95.0
+_BASE_TOTAL_SECONDS = 87.0
 _DEFAULT_DURATION = 210.0
 _ONCALL_PERSON_NAME = "赵欣欣"
 
@@ -118,7 +123,6 @@ def _wait(seconds: float, description: str = ""):
 
 
 def _send_card(card: dict) -> str:
-    """在群里直接发送卡片（顶级消息）。"""
     resp = feishu_api.send_card(card=card)
     msg_id = resp.get("data", {}).get("message_id", "")
     print(f"         📨 卡片已发送 [{msg_id[:20]}...]")
@@ -126,7 +130,6 @@ def _send_card(card: dict) -> str:
 
 
 def _reply_card_in_thread(parent_msg_id: str, card: dict) -> str:
-    """在话题下回复卡片消息。"""
     card_json = json.dumps(card, ensure_ascii=False)
     resp = feishu_api.reply_message(
         parent_msg_id, card_json, msg_type="interactive", reply_in_thread=True)
@@ -135,14 +138,17 @@ def _reply_card_in_thread(parent_msg_id: str, card: dict) -> str:
     return msg_id
 
 
+def _update_card(msg_id: str, card: dict):
+    feishu_api.update_card(msg_id, card)
+    print(f"         📝 卡片已更新 [{msg_id[:20]}...]")
+
+
 def _reply(message_id: str, text: str) -> str:
-    """在话题下回复纯文本。"""
     resp = feishu_api.reply_in_thread(message_id, text)
     return resp.get("data", {}).get("message_id", "")
 
 
 def _reply_at_oncall(parent_msg_id: str, text: str) -> str:
-    """在话题下回复并 @值班人。"""
     if _oncall_open_id:
         resp = feishu_api.reply_at_message(
             parent_msg_id, _oncall_open_id, text, in_thread=True)
@@ -152,49 +158,15 @@ def _reply_at_oncall(parent_msg_id: str, text: str) -> str:
 
 
 def _human_reply_in_thread(parent_msg_id: str, text: str) -> str:
-    """模拟人类值班人在话题下回复。"""
     return _reply(parent_msg_id, text)
 
 
-def _update_approval_card(card_msg_id: str, problem_id: str, title: str,
-                          root_cause: str, action_plan: str,
-                          result: str = "approved") -> None:
-    """审批后更新卡片为已审批状态，按钮替换为结果标记。"""
-    if result == "approved":
-        status_text = "✅ 已批准"
-        color = "green"
-    else:
-        status_text = "❌ 已拒绝"
-        color = "red"
-
-    updated_card = {
-        "config": {"update_multi": True, "wide_screen_mode": True},
-        "header": {
-            "template": color,
-            "title": {"tag": "plain_text",
-                      "content": f"🧾 止损审批 - {problem_id}  [{status_text}]"},
-        },
-        "elements": [
-            {"tag": "markdown", "content": f"**问题**: {title}"},
-            {"tag": "markdown", "content": f"**根因**: {root_cause}"},
-            {"tag": "hr"},
-            {"tag": "markdown", "content": f"**止损方案**: {action_plan}"},
-            {"tag": "hr"},
-            {"tag": "markdown",
-             "content": f"**审批结果**：{status_text}\n\n"
-                        f"审批人：{_ONCALL_PERSON_NAME} | 时间：{time.strftime('%H:%M:%S')}"},
-        ],
-    }
-    feishu_api.update_card(card_msg_id, updated_card)
-    print(f"         📝 卡片已更新为 [{status_text}]")
-
-
 # ============================================================
-# 卡片构建
+# 卡片构建：JSON 2.0 + collapsible_panel
 # ============================================================
 
-def _build_alert_card(alert_name, service, severity, summary,
-                      alert_id=""):
+def _build_alert_card(alert_name, service, severity, summary, alert_id=""):
+    """告警卡片（JSON 1.0 格式，保持简洁）。"""
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     emoji_map = {"critical": "🔴", "warning": "🟡", "info": "🔵"}
     return {
@@ -227,12 +199,95 @@ def _build_alert_card(alert_name, service, severity, summary,
     }
 
 
+def _build_analysis_card_thinking(problem_id, title, steps_md):
+    """分析中卡片：蓝色头 + 分析过程在折叠面板里（JSON 2.0）。"""
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text",
+                      "content": f"🔍 分析中... — {problem_id}"},
+            "subtitle": {"tag": "plain_text", "content": title},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": "🤖 **正在分析根因，请稍候...**"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "查看分析过程"},
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": steps_md},
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _build_analysis_card_done(problem_id, title, conclusion_md,
+                              steps_md, confidence, color="orange"):
+    """分析完成卡片：显示结论 + 分析过程可折叠（JSON 2.0）。"""
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": color,
+            "title": {"tag": "plain_text",
+                      "content": f"🧠 RCA 分析完成 — {problem_id}"},
+            "subtitle": {"tag": "plain_text", "content": title},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": conclusion_md},
+                {"tag": "markdown", "content": f"**置信度**：{confidence}"},
+                {"tag": "hr"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "查看分析过程"},
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": steps_md},
+                    ],
+                },
+            ],
+        },
+    }
+
+
 def _build_approval_card(problem_id, title, root_cause, action_plan):
     return {
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "template": "orange",
-            "title": {"tag": "plain_text", "content": f"🧾 止损审批 - {problem_id}"},
+            "title": {"tag": "plain_text", "content": f"🧾 止损审批 — {problem_id}"},
         },
         "elements": [
             {"tag": "markdown", "content": f"**问题**: {title}"},
@@ -240,7 +295,8 @@ def _build_approval_card(problem_id, title, root_cause, action_plan):
             {"tag": "hr"},
             {"tag": "markdown", "content": f"**止损方案**: {action_plan}"},
             {"tag": "hr"},
-            {"tag": "markdown", "content": "⚠️ 请值班人确认是否执行以上止损方案："},
+            {"tag": "markdown",
+             "content": f"⚠️ 请 **{_ONCALL_PERSON_NAME}** 确认是否执行："},
             {"tag": "action", "actions": [
                 {"tag": "button",
                  "text": {"tag": "plain_text", "content": "✅ 同意执行"},
@@ -254,6 +310,136 @@ def _build_approval_card(problem_id, title, root_cause, action_plan):
                      "action": "approval_reject", "approval_id": f"ACT-{problem_id}"}}]},
             ]},
         ],
+    }
+
+
+def _build_approval_result_card(problem_id, title, root_cause, action_plan,
+                                result="approved"):
+    status_text = "✅ 已批准" if result == "approved" else "❌ 已拒绝"
+    color = "green" if result == "approved" else "red"
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": color,
+            "title": {"tag": "plain_text",
+                      "content": f"🧾 止损审批 — {problem_id}  [{status_text}]"},
+        },
+        "elements": [
+            {"tag": "markdown", "content": f"**问题**: {title}"},
+            {"tag": "markdown", "content": f"**根因**: {root_cause}"},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": f"**止损方案**: {action_plan}"},
+            {"tag": "hr"},
+            {"tag": "markdown",
+             "content": f"**审批结果**：{status_text}\n"
+                        f"审批人：{_ONCALL_PERSON_NAME} | 时间：{time.strftime('%H:%M:%S')}"},
+        ],
+    }
+
+
+def _build_execution_card_running(problem_id, title, steps_md):
+    """止损执行中卡片：蓝色头 + 步骤在折叠面板（JSON 2.0）。"""
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text",
+                      "content": f"⚙️ 止损执行中... — {problem_id}"},
+            "subtitle": {"tag": "plain_text", "content": title},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": "🤖 **正在执行止损方案...**"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "查看执行过程"},
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": steps_md},
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _build_execution_card_done(problem_id, title, result_md, steps_md):
+    """止损执行完成卡片：显示结果 + 执行过程可折叠（JSON 2.0）。"""
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text",
+                      "content": f"✅ 止损执行完成 — {problem_id}"},
+            "subtitle": {"tag": "plain_text", "content": title},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": result_md},
+                {"tag": "hr"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "查看执行过程"},
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": steps_md},
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
+    """恢复验证卡片：累积展示多轮验证结果（JSON 2.0，可更新）。"""
+    status_map = {
+        "verifying": ("orange", "📉 恢复验证中"),
+        "passed": ("green", "✅ 恢复完成"),
+        "failed": ("red", "⚠️ 恢复未达标"),
+    }
+    color, label = status_map.get(status, ("orange", "📉 恢复验证中"))
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": color,
+            "title": {"tag": "plain_text",
+                      "content": f"{label} — {problem_id}"},
+            "subtitle": {"tag": "plain_text", "content": title},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": rounds_md},
+            ],
+        },
     }
 
 
@@ -286,7 +472,6 @@ def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
 
-    # 查找值班人的 open_id，用于 @
     member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
     if member:
         _oncall_open_id = member.get("member_id")
@@ -307,76 +492,95 @@ def run_demo():
         "支付服务 P99 延迟从 300ms 飙升至 8000ms，大量支付请求超时",
         alert_id="AG-30001"))
 
-    _wait(3, "Agent 检测到新告警...")
+    _wait(2, "Agent 检测到新告警...")
 
-    _pause("🤖 Agent 回复：收到，开始分析")
-    _reply(_msg_ids["alert_a"],
-           "🤖 收到告警，我来处理。正在分析根因...\n\n"
-           "将查询以下数据源：\n"
-           "- Tempo: payment-gateway 调用链路\n"
-           "- Prometheus: 服务指标\n"
-           "- Loki: 错误日志")
-
-    _wait(5, "Agent 正在查询链路和指标数据...")
-
-    _reply(_msg_ids["alert_a"],
-           "🔍 **分析进度**：\n"
-           "- ✅ Trace 查询完成：payment-gateway 外部调用耗时异常\n"
-           "- ✅ Loki 发现 `TLS handshake timeout` 错误日志\n"
-           "- ⏳ 正在关联变更记录...")
-
-    _wait(4, "Agent 基于日志关键词推导根因...")
-
-    # Agent 给出了 **错误的** RCA，并 @值班人 请确认
-    _pause("🤖 Agent 给出 RCA（❌ 错误的），@值班人请确认")
-    _reply_at_oncall(_msg_ids["alert_a"],
-                     "\n🧠 **RCA 分析完成**\n\n"
-                     "**根因定位**：\n"
-                     "Loki 日志中发现大量 `TLS handshake timeout` 错误。\n"
-                     "推断 payment-gateway 的 **TLS 证书可能过期**，"
-                     "导致与上游支付渠道的 HTTPS 握手失败。\n\n"
-                     "**置信度**：⭐⭐⭐ (60%) — 中等\n\n"
-                     "📝 已创建问题 **P-1003**：「支付网关 TLS 证书过期导致交易超时」\n\n"
-                     "⚠️ 置信度中等，请确认根因是否正确。如判断有误请随时纠正。")
-
-    _wait(5, "等待值班人确认或纠偏...")
-
-    # 值班人在话题下回复纠偏
-    _pause("👤 值班人在话题下纠偏：根因不对")
-    _human_reply_in_thread(_msg_ids["alert_a"],
-                           "👤 根因不对。TLS 证书上周刚换过，不可能过期。\n"
-                           "你查一下是不是 **上游 DNS 解析** 的问题，"
-                           "我记得 CoreDNS 最近有点不稳定。")
+    # Agent 简短回复 + 发分析卡片
+    _pause("🤖 Agent 回复并发出分析卡片")
+    _reply(_msg_ids["alert_a"], "🤖 收到，开始分析。")
 
     _wait(2)
 
-    _pause("🤖 Agent 接受纠偏，重新分析")
-    _reply(_msg_ids["alert_a"],
-           "🔄 **接受纠偏，正在重新分析**\n\n"
-           "感谢值班人提示！已排除 TLS 证书原因。\n"
-           "重新聚焦方向：**CoreDNS / DNS 解析异常**\n"
-           "正在查询相关指标...")
+    # 发送"分析中"卡片（折叠面板里放初步步骤）
+    analysis_steps_v1 = (
+        "1. ✅ 查询 Tempo: payment-gateway 外部调用耗时异常\n"
+        "2. ✅ 查询 Loki: 发现 `TLS handshake timeout` 错误日志\n"
+        "3. ⏳ 关联变更记录..."
+    )
+    _msg_ids["analysis_a"] = _reply_card_in_thread(
+        _msg_ids["alert_a"],
+        _build_analysis_card_thinking(
+            "P-1003", "支付网关响应超时", analysis_steps_v1))
 
-    _wait(5, "Agent 重新查询 DNS 相关指标和日志...")
+    _wait(5, "Agent 分析中...")
 
-    _reply(_msg_ids["alert_a"],
-           "🔍 **重新分析进度**：\n"
-           "- ✅ Prometheus: CoreDNS 请求延迟从 5ms → 3200ms\n"
-           "- ✅ Loki: CoreDNS 日志发现 `OOMKilled` 事件 (15:23)\n"
-           "- ✅ K8s Events: coredns-5d78c9869d-xk7m2 被 OOMKill 重启了 3 次")
+    # 更新分析卡片为"完成"状态（❌ 错误的 RCA）
+    _pause("🤖 分析完成，更新卡片（❌ 错误RCA）+ @值班人")
+    analysis_steps_v1_done = (
+        "1. ✅ Tempo: payment-gateway → upstream 调用链路 P99 = 7800ms\n"
+        "2. ✅ Loki: 大量 `TLS handshake timeout` 错误\n"
+        "3. ✅ 变更记录: 近 24h 无部署变更"
+    )
+    _update_card(_msg_ids["analysis_a"], _build_analysis_card_done(
+        "P-1003", "支付网关响应超时",
+        "**根因定位**：payment-gateway 的 **TLS 证书可能过期**，"
+        "导致与上游支付渠道的 HTTPS 握手失败。\n\n"
+        "📝 已创建问题 **P-1003**\n"
+        "⚠️ 置信度中等，请值班人确认。如有误请纠正。",
+        analysis_steps_v1_done,
+        "⭐⭐⭐ (60%) — 中等",
+        color="orange"))
 
-    _wait(3)
+    _reply_at_oncall(_msg_ids["alert_a"],
+                     "\nRCA 分析完成（置信度 60%），请查看上方卡片确认。")
 
-    _pause("🤖 Agent 给出更新后的 RCA（✅ 正确的）")
-    _reply(_msg_ids["alert_a"],
-           "🧠 **RCA 更新（基于值班人反馈重新分析）**\n\n"
-           "**根因定位**：\n"
-           "CoreDNS Pod `coredns-5d78c9869d-xk7m2` 于 15:23 因内存不足被 OOMKill。\n"
-           "集群仅剩 1 个 CoreDNS 副本承载全部 DNS 解析，导致解析延迟飙升至 3200ms。\n"
-           "payment-gateway 连接上游支付渠道时 DNS 解析超时 → TLS 握手超时 → 请求失败。\n\n"
-           "**置信度**：⭐⭐⭐⭐⭐ (95%)\n"
-           "**修正记录**：~~TLS 证书过期~~ → CoreDNS OOMKill 导致 DNS 解析超时\n\n"
-           "_💡 TLS handshake timeout 日志是 DNS 超时的下游表现，并非根因本身。感谢值班人指出方向！_")
+    _wait(5, "等待值班人确认或纠偏...")
+
+    # 值班人纠偏
+    _pause("👤 值班人纠偏：根因不对")
+    _human_reply_in_thread(_msg_ids["alert_a"],
+                           f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
+                           "根因不对。TLS 证书上周刚换过，不可能过期。\n"
+                           "查一下是不是 **上游 DNS 解析** 的问题，"
+                           "CoreDNS 最近有点不稳定。")
+
+    _wait(2)
+
+    # Agent 重新分析 — 发新的分析卡片
+    _pause("🤖 接受纠偏，发新分析卡片")
+    _reply(_msg_ids["alert_a"], "🔄 收到，排除 TLS 证书，重新聚焦 **DNS 解析**方向。")
+
+    _wait(2)
+
+    reanalysis_steps = (
+        "1. ✅ Prometheus: CoreDNS 请求延迟 5ms → 3200ms\n"
+        "2. ✅ Loki: CoreDNS 日志 `OOMKilled` 事件 (15:23)\n"
+        "3. ⏳ 查询 K8s Events..."
+    )
+    _msg_ids["analysis_a2"] = _reply_card_in_thread(
+        _msg_ids["alert_a"],
+        _build_analysis_card_thinking(
+            "P-1003 (重新分析)", "聚焦 CoreDNS / DNS 解析", reanalysis_steps))
+
+    _wait(5, "Agent 重新分析中...")
+
+    # 更新为正确 RCA
+    _pause("🤖 重新分析完成，更新卡片（✅ 正确RCA）")
+    reanalysis_steps_done = (
+        "1. ✅ Prometheus: CoreDNS 请求延迟 5ms → 3200ms\n"
+        "2. ✅ Loki: CoreDNS `OOMKilled` 事件 (15:23)\n"
+        "3. ✅ K8s Events: coredns-5d78c9869d-xk7m2 被 OOMKill 重启 3 次\n"
+        "4. ✅ 集群仅剩 1 个 CoreDNS 副本 → DNS 解析延迟飙升"
+    )
+    _update_card(_msg_ids["analysis_a2"], _build_analysis_card_done(
+        "P-1003 (更新)", "CoreDNS OOMKill 导致 DNS 解析超时",
+        "**根因定位**：CoreDNS Pod 于 15:23 因 OOM 被 Kill，"
+        "集群仅剩 1 副本，DNS 解析延迟飙升至 3200ms，"
+        "导致 payment-gateway 连接上游超时。\n\n"
+        "**修正**：~~TLS 证书过期~~ → CoreDNS OOMKill\n"
+        "_💡 TLS handshake timeout 是 DNS 超时的下游表现_",
+        reanalysis_steps_done,
+        "⭐⭐⭐⭐⭐ (95%)",
+        color="green"))
 
     _wait(3)
 
@@ -387,104 +591,110 @@ def run_demo():
     print(f"  🎬 第二幕：止损方案有风险 → 值班人修改")
     print(f"  {'━' * 50}")
 
-    _pause("🤖 Agent 生成止损方案（⚠️ 有风险的方案）")
-    _reply(_msg_ids["alert_a"],
-           "🔧 **止损方案（P-1003）**\n\n"
-           "根因为 CoreDNS Pod OOMKill，建议执行：\n"
-           "1. **删除异常 Pod** `coredns-5d78c9869d-xk7m2`，触发重建\n"
-           "2. 重建后 CoreDNS 恢复正常内存状态\n\n"
-           "⚠️ 需要值班人授权，正在发送审批请求...")
-
-    _wait(2)
-
-    # 审批卡片在话题下发送
-    _pause("🧾 在话题下发送审批卡片 + @值班人")
-    approval_v1_card = _build_approval_card(
-        "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
-        "CoreDNS Pod OOMKill → 集群 DNS 解析延迟飙升 → payment-gateway 超时",
-        "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2，触发 K8s 重建")
+    # 审批卡片（有风险方案）+ @值班人
+    _pause("🧾 发送止损审批卡片（⚠️ 有风险方案）+ @值班人")
     _msg_ids["approval_v1"] = _reply_card_in_thread(
-        _msg_ids["alert_a"], approval_v1_card)
+        _msg_ids["alert_a"],
+        _build_approval_card(
+            "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
+            "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
+            "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2，触发 K8s 重建"))
 
-    _reply_at_oncall(_msg_ids["alert_a"],
-                     "\n🔔 止损方案已生成，请审批上方卡片。")
+    _reply_at_oncall(_msg_ids["alert_a"], "\n请审批上方止损方案。")
 
-    _wait(4, "值班人审阅止损方案...")
+    _wait(4, "值班人审阅...")
 
-    # 值班人在话题下拒绝方案
-    _pause("👤 值班人在话题下拒绝方案，提出修改")
+    # 值班人拒绝
+    _pause("👤 值班人拒绝方案")
     _human_reply_in_thread(_msg_ids["alert_a"],
-                           "👤 ❌ 这个方案我不同意！CoreDNS 是集群核心组件，"
-                           "现在只剩 1 个副本了，你直接删 Pod 的话整个集群 DNS 都会挂！\n\n"
-                           "正确的做法是：**先给 CoreDNS 扩容到 3 副本**，"
-                           "等新副本 Ready 之后再处理异常 Pod。\n"
-                           "另外还要把 CoreDNS 的内存 limit 从 170Mi 调到 256Mi，防止再次 OOM。")
+                           f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
+                           "❌ 不行！只剩 1 个副本了，删 Pod 整个集群 DNS 都会挂。\n"
+                           "应该：**先扩容到 3 副本**，等 Ready 后再处理。"
+                           "另外内存 limit 从 170Mi 调到 256Mi。")
 
     _wait(1)
 
-    # 更新第一张审批卡片为"已拒绝"
-    _update_approval_card(
-        _msg_ids["approval_v1"], "P-1003",
-        "CoreDNS OOMKill 导致 DNS 解析超时",
-        "CoreDNS Pod OOMKill → 集群 DNS 解析延迟飙升",
+    _update_card(_msg_ids["approval_v1"], _build_approval_result_card(
+        "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
+        "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
         "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2",
-        result="rejected")
+        result="rejected"))
 
     _wait(2)
 
-    _pause("🤖 Agent 接受修改，更新方案")
-    _reply(_msg_ids["alert_a"],
-           "✅ **方案已更新（基于值班人反馈修改）**\n\n"
-           "原方案风险点：直接删除唯一 CoreDNS Pod 会导致集群 DNS 中断。\n"
-           "已采纳值班人建议，更新为：\n\n"
-           "1. ~~删除异常 Pod~~ → **扩容 CoreDNS Deployment 副本数到 3**\n"
-           "2. 等待新副本 Ready (约 30s)\n"
-           "3. **调整内存 limit**: 170Mi → 256Mi（防止再次 OOM）\n\n"
-           "📝 方案修改记录已写入 P-1003 时间线。")
+    # 更新后的审批卡片
+    _pause("🧾 发送更新后的审批卡片")
+    _reply(_msg_ids["alert_a"], "✅ 已采纳修改，更新方案。")
 
-    _wait(2)
+    _wait(1)
 
-    # 在话题下发送更新后的审批卡片
-    _pause("🧾 在话题下发送更新后的审批卡片")
-    approval_v2_card = _build_approval_card(
-        "P-1003（v2）", "CoreDNS OOMKill 导致 DNS 解析超时",
-        "CoreDNS Pod OOMKill → DNS 解析延迟飙升 → payment-gateway 超时",
-        "① 扩容 CoreDNS 到 3 副本  ② 调整内存 limit 170Mi→256Mi  ③ 等待新副本 Ready")
     _msg_ids["approval_v2"] = _reply_card_in_thread(
-        _msg_ids["alert_a"], approval_v2_card)
+        _msg_ids["alert_a"],
+        _build_approval_card(
+            "P-1003 v2", "CoreDNS OOMKill 导致 DNS 解析超时",
+            "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
+            "① 扩容 CoreDNS 到 3 副本  ② 内存 limit 170Mi→256Mi  ③ 等新副本 Ready"))
 
-    _reply_at_oncall(_msg_ids["alert_a"],
-                     "\n🔔 方案已更新，请审批上方新卡片。")
+    _reply_at_oncall(_msg_ids["alert_a"], "\n方案已更新，请审批。")
 
-    _wait(4, "等待值班人审批...")
+    _wait(4, "等待审批...")
 
     # 值班人批准
-    _pause("✅ 值班人批准更新后的方案")
-    _update_approval_card(
-        _msg_ids["approval_v2"], "P-1003（v2）",
-        "CoreDNS OOMKill 导致 DNS 解析超时",
+    _pause("✅ 值班人批准")
+    _update_card(_msg_ids["approval_v2"], _build_approval_result_card(
+        "P-1003 v2", "CoreDNS OOMKill 导致 DNS 解析超时",
         "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
-        "① 扩容 CoreDNS 到 3 副本  ② 调整内存 limit  ③ 等新副本 Ready",
-        result="approved")
+        "① 扩容 CoreDNS 到 3 副本  ② 内存 limit 170Mi→256Mi  ③ 等新副本 Ready",
+        result="approved"))
 
-    _reply(_msg_ids["alert_a"],
-           "✅ **审批已通过**（方案v2）\n\n值班人已批准更新后的止损方案，正在执行...")
+    _wait(1)
 
-    _wait(2)
+    # 止损执行卡片（带折叠面板展示执行步骤）
+    _pause("⚙️ 开始执行止损")
+    exec_steps_1 = (
+        "1. ✅ `kubectl scale deployment coredns --replicas=3` — 副本数扩容至 3\n"
+        "2. ⏳ 等待新副本启动..."
+    )
+    _msg_ids["exec_card"] = _reply_card_in_thread(
+        _msg_ids["alert_a"],
+        _build_execution_card_running(
+            "P-1003", "CoreDNS OOMKill 止损", exec_steps_1))
 
-    _reply(_msg_ids["alert_a"],
-           "🔧 **执行进度**：\n"
-           "- ✅ 步骤1: CoreDNS 副本数已扩容至 3\n"
-           "- ⏳ 步骤2: 等待新副本启动...")
+    _wait(4, "K8s 正在创建新 Pod...")
 
-    _wait(4, "K8s 正在创建新的 CoreDNS Pod...")
+    # 更新执行步骤
+    exec_steps_2 = (
+        "1. ✅ `kubectl scale deployment coredns --replicas=3` — 副本数扩容至 3\n"
+        "2. ✅ 等待新副本: 3/3 Ready (耗时 28s)\n"
+        "3. ⏳ 调整内存 limit..."
+    )
+    _update_card(_msg_ids["exec_card"],
+                 _build_execution_card_running(
+                     "P-1003", "CoreDNS OOMKill 止损", exec_steps_2))
 
-    _reply(_msg_ids["alert_a"],
-           "🔧 **执行进度**：\n"
-           "- ✅ 步骤1: CoreDNS 副本数已扩容至 3\n"
-           "- ✅ 步骤2: 3 个副本均已 Ready (1/1)\n"
-           "- ✅ 步骤3: 内存 limit 已调整为 256Mi\n\n"
-           "⏳ 进入 **Recovering** 状态，开始恢复验证...")
+    _wait(3, "调整内存 limit...")
+
+    # 执行完成 — 更新卡片为完成状态
+    _pause("✅ 止损执行完成")
+    exec_steps_done = (
+        "1. ✅ `kubectl scale deployment coredns --replicas=3` — 副本数扩容至 3\n"
+        "2. ✅ 等待新副本: 3/3 Ready (耗时 28s)\n"
+        "3. ✅ `kubectl patch` 内存 limit 170Mi → 256Mi\n"
+        f"4. ✅ 全部完成 ({time.strftime('%H:%M:%S')})"
+    )
+    exec_result = (
+        "**执行结果**：全部 3 个步骤执行成功 ✅\n\n"
+        "| 步骤 | 结果 |\n"
+        "|------|------|\n"
+        "| CoreDNS 扩容至 3 副本 | ✅ 成功 |\n"
+        "| 新副本 Ready | ✅ 3/3 Ready (28s) |\n"
+        "| 内存 limit 调整 | ✅ 170Mi → 256Mi |\n\n"
+        "⏳ 进入 **Recovering** 状态，开始恢复验证..."
+    )
+    _update_card(_msg_ids["exec_card"],
+                 _build_execution_card_done(
+                     "P-1003", "CoreDNS OOMKill 止损",
+                     exec_result, exec_steps_done))
 
     _wait(3)
 
@@ -498,80 +708,129 @@ def run_demo():
     _pause("🚨 告警B到达：Kafka 消费 lag 持续增长 (Warning)")
     _msg_ids["alert_b"] = _send_card(_build_alert_card(
         "KafkaConsumerLagHigh", "order-processor", "warning",
-        "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+，且持续增长",
+        "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+",
         alert_id="AG-30002"))
 
     _wait(2)
 
-    _reply(_msg_ids["alert_b"],
-           "🤖 收到告警，正在分析。\n\n"
-           "_💡 当前正在处理 P-1003（DNS 解析超时），同时并行分析此告警。_")
+    _reply(_msg_ids["alert_b"], "🤖 收到，开始分析。")
 
-    _wait(5, "Agent 查询 Kafka 相关指标和日志...")
+    _wait(2)
 
-    _reply(_msg_ids["alert_b"],
-           "🔍 **分析进度**：\n"
-           "- ✅ 消费者实例状态正常，无报错\n"
-           "- ✅ 生产端 QPS 无明显变化（稳定 ~2000 msg/s）\n"
-           "- ✅ Kafka Broker 指标正常\n"
-           "- ❌ 未发现 consumer 异常堆栈或重启记录")
+    # 分析卡片
+    kafka_steps = (
+        "1. ✅ Consumer 实例状态正常，无报错\n"
+        "2. ✅ 生产端 QPS 稳定 ~2000 msg/s\n"
+        "3. ✅ Kafka Broker 指标正常\n"
+        "4. ⚠️ 每条消息处理耗时 5ms → 200ms\n"
+        "5. ❌ 近 24h 无 Deployment 变更\n"
+        "6. ❌ 无法确定处理耗时变长原因"
+    )
+    _msg_ids["analysis_b"] = _reply_card_in_thread(
+        _msg_ids["alert_b"],
+        _build_analysis_card_thinking(
+            "P-1004", "Kafka 消费延迟异常", kafka_steps))
 
-    _wait(4, "Agent 尝试关联变更记录...")
+    _wait(5, "Agent 分析 Kafka 指标...")
 
-    _reply(_msg_ids["alert_b"],
-           "🔍 **继续排查**：\n"
-           "- ✅ 近 24h 无相关 Deployment 变更\n"
-           "- ✅ Kafka 集群配置无变更\n"
-           "- ⚠️ 但 consumer 的每条消息处理耗时从 5ms → 200ms\n"
-           "- ❌ 无法确定处理耗时变长的原因")
+    # 分析卡住，更新卡片为"需要协助"
+    _pause("❓ Agent 分析无果，更新卡片 + @值班人求助")
+    kafka_stuck_card = {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "orange",
+            "title": {"tag": "plain_text",
+                      "content": "❓ 需要协助 — P-1004"},
+            "subtitle": {"tag": "plain_text", "content": "Kafka 消费延迟异常"},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown",
+                 "content": "🤖 暂时无法确定根因，需要值班人提供线索：\n"
+                            "- order-processor 最近是否有发版？\n"
+                            "- 是否有已知 bug 与此相关？"},
+                {"tag": "hr"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "查看已排查内容"},
+                        "vertical_align": "center",
+                        "icon": {
+                            "tag": "standard_icon",
+                            "token": "down-small-ccm_outlined",
+                            "size": "16px 16px",
+                        },
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": kafka_steps},
+                    ],
+                },
+            ],
+        },
+    }
+    _update_card(_msg_ids["analysis_b"], kafka_stuck_card)
 
-    _wait(3)
-
-    # Agent 卡住了，主动 @值班人 求助
-    _pause("❓ Agent 分析无果，@值班人 求助")
     _reply_at_oncall(_msg_ids["alert_b"],
-                     "\n❓ **需要协助**\n\n"
-                     "我暂时无法确定根因。目前排查结论：\n"
-                     "- 消费者本身没有异常，没有报错也没有重启\n"
-                     "- 生产端 QPS 没有变化，Kafka Broker 也正常\n"
-                     "- 唯一发现：每条消息处理耗时从 5ms 增加到 200ms，但原因不明\n\n"
-                     "**能否提供以下线索？**\n"
-                     "1. order-processor 最近是否有发版或配置变更？\n"
-                     "2. 是否有已知的 bug 或 issue 与此相关？\n"
-                     "3. 是否需要我查看特定服务或组件的指标？\n\n"
-                     "📝 已创建问题 **P-1004**：「Kafka 消费延迟异常增长」（待定根因）")
+                     "\n分析暂无头绪，请查看上方卡片并提供线索。")
 
-    _wait(5, "等待值班人提供线索...")
+    _wait(5, "等待值班人...")
 
-    # 值班人在话题下回复
-    _pause("👤 值班人在话题下告知：已知 bug，静默")
+    # 值班人告知已知 bug
+    _pause("👤 值班人告知：已知 bug，静默即可")
     _human_reply_in_thread(_msg_ids["alert_b"],
-                           "👤 这个我知道，是上周三发版引入的性能 bug，"
-                           "order-processor 的批量查询逻辑改出了 N+1 问题。\n"
-                           "修复 MR 已经提交了（#ISSUE-456），预计下周一发版修复。\n\n"
-                           "不用止损了，**关联 ISSUE-456，然后静默 7 天**就行。")
+                           f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
+                           "这个我知道，上周三发版引入的 N+1 查询 bug。"
+                           "修复 MR 已提交（#ISSUE-456），下周一修。\n"
+                           "**关联 ISSUE-456，静默 7 天**就行。")
 
-    _wait(3)
+    _wait(2)
 
-    _pause("🤖 Agent 执行值班人指令：关联 Issue + 静默")
-    _reply(_msg_ids["alert_b"],
-           "✅ **已按值班人指令处理**\n\n"
-           "1. ✅ 已关联 Issue: [ISSUE-456](https://jira.example.com/ISSUE-456) "
-           "— order-processor N+1 查询性能 bug\n"
-           "2. ✅ P-1004 已静默 7 天（至 2026-04-07）\n"
-           "3. ✅ 关联 OnCall AlertGroup AG-30002 已静默\n\n"
-           "📝 根因更新为：「已知 bug（ISSUE-456），"
-           "order-processor 批量查询 N+1 问题，预计下周一修复」")
+    _pause("🤖 Agent 执行指令")
+    exec_kafka_steps = (
+        "1. ✅ 关联 ISSUE-456\n"
+        "2. ⏳ 静默报警规则 KafkaConsumerLagHigh..."
+    )
+    _msg_ids["exec_kafka"] = _reply_card_in_thread(
+        _msg_ids["alert_b"],
+        _build_execution_card_running(
+            "P-1004", "Kafka 消费延迟处理", exec_kafka_steps))
+
+    _wait(2)
+
+    exec_kafka_done_steps = (
+        "1. ✅ 关联 ISSUE-456\n"
+        "2. ✅ 报警规则 KafkaConsumerLagHigh 静默 7 天\n"
+        "3. ✅ P-1004 标记为 Resolved"
+    )
+    exec_kafka_result = (
+        "**执行结果**：全部 3 个步骤执行成功 ✅\n\n"
+        "| 步骤 | 结果 |\n"
+        "|------|------|\n"
+        "| 关联 ISSUE-456 | ✅ 已关联 |\n"
+        "| 报警规则静默 | ✅ 静默 7 天 |\n"
+        "| P-1004 状态 | ✅ Resolved |"
+    )
+    _update_card(_msg_ids["exec_kafka"],
+                 _build_execution_card_done(
+                     "P-1004", "Kafka 消费延迟处理",
+                     exec_kafka_result, exec_kafka_done_steps))
 
     _wait(1)
 
-    # P-1004 静默卡片在话题下发
     _reply_card_in_thread(_msg_ids["alert_b"], _build_status_card(
-        "P-1004", "Kafka 消费延迟异常增长",
-        "silenced",
-        "**处理结果**：已知 bug（ISSUE-456），静默至 2026-04-07\n\n"
-        "**根因**: order-processor 批量查询 N+1 问题\n"
-        "**修复计划**: 下周一发版修复"))
+        "P-1004", "Kafka 消费延迟异常",
+        "resolved",
+        "**处理结果**：已知 bug（ISSUE-456），无需止损\n"
+        "**操作**: 报警规则静默 7 天 + 问题标记 Resolved\n"
+        "**根因**: order-processor N+1 查询 bug\n"
+        "**修复计划**: 下周一发版"))
 
     _wait(3)
 
@@ -582,79 +841,71 @@ def run_demo():
     print(f"  🎬 第四幕：恢复验证不彻底 → 值班人接管")
     print(f"  {'━' * 50}")
 
-    _pause("📉 回到 P-1003：恢复验证第 1 轮")
-    _reply(_msg_ids["alert_a"],
-           "📉 **恢复验证 — 第 1/3 轮**\n\n"
-           "| 指标 | 止损前 | 当前 | 状态 |\n"
-           "|------|--------|------|------|\n"
-           "| CoreDNS 请求延迟 | 3200ms | 850ms | ⏳ 好转中 |\n"
-           "| CoreDNS 副本数 | 1 (OOMKill) | 3 (Ready) | ✅ 正常 |\n"
-           "| payment-gateway P99 | 8000ms | 2100ms | ⏳ 好转中 |\n"
-           "| 支付成功率 | 62.3% | 88.7% | ⏳ 好转中 |\n\n"
-           "整体在好转，但尚未恢复到正常水位。继续观察...")
+    # 恢复验证第 1 轮 — 发独立恢复验证卡片
+    _pause("📉 恢复验证第 1 轮")
+    round1_time = time.strftime('%H:%M:%S')
+    verify_round1 = (
+        f"**第 1 轮** ({round1_time})  ·  止损完成后 ~30s\n\n"
+        "| 指标 | 止损前 | 当前 | 状态 |\n"
+        "|------|--------|------|------|\n"
+        "| CoreDNS 延迟 | 3200ms | 850ms | ⏳ 好转 |\n"
+        "| CoreDNS 副本 | 1 | 3 (Ready) | ✅ |\n"
+        "| gateway P99 | 8000ms | 2100ms | ⏳ 好转 |\n"
+        "| 支付成功率 | 62.3% | 88.7% | ⏳ 好转 |\n\n"
+        "好转中，继续观察..."
+    )
+    _msg_ids["recovery_card"] = _reply_card_in_thread(
+        _msg_ids["alert_a"],
+        _build_recovery_card("P-1003", "恢复验证", verify_round1, "verifying"))
 
-    _wait(6, "恢复验证第 2 轮（模拟等待 30s）...")
+    _wait(6, "等待指标进一步恢复...")
 
-    _pause("📉 恢复验证第 2 轮 → 好转但未达标，@值班人")
+    # 恢复验证第 2 轮 — 更新同一张卡片，累积两轮结果
+    _pause("📉 恢复验证第 2 轮 → 未达标，@值班人")
+    round2_time = time.strftime('%H:%M:%S')
+    verify_rounds_all = (
+        f"**第 1 轮** ({round1_time})  ·  止损完成后 ~30s\n\n"
+        "| 指标 | 止损前 | 当前 | 状态 |\n"
+        "|------|--------|------|------|\n"
+        "| CoreDNS 延迟 | 3200ms | 850ms | ⏳ 好转 |\n"
+        "| CoreDNS 副本 | 1 | 3 (Ready) | ✅ |\n"
+        "| gateway P99 | 8000ms | 2100ms | ⏳ 好转 |\n"
+        "| 支付成功率 | 62.3% | 88.7% | ⏳ 好转 |\n\n"
+        "---\n\n"
+        f"**第 2 轮** ({round2_time})  ·  止损完成后 ~2min\n\n"
+        "| 指标 | 止损前 | 当前 | 正常值 | 状态 |\n"
+        "|------|--------|------|--------|------|\n"
+        "| CoreDNS 延迟 | 3200ms | 120ms | <10ms | ⚠️ 偏高 |\n"
+        "| CoreDNS 副本 | 1 | 3 | 3 | ✅ |\n"
+        "| gateway P99 | 8000ms | 950ms | <400ms | ⚠️ 偏高 |\n"
+        "| 支付成功率 | 62.3% | 96.1% | >99.5% | ⚠️ 未达标 |\n\n"
+        "🟡 大幅好转，但未完全恢复。可能还有其他因素。"
+    )
+    _update_card(_msg_ids["recovery_card"],
+                 _build_recovery_card("P-1003", "恢复验证",
+                                      verify_rounds_all, "failed"))
+
     _reply_at_oncall(_msg_ids["alert_a"],
-                     "\n📉 **恢复验证 — 第 2/3 轮**\n\n"
-                     "| 指标 | 止损前 | 当前 | 正常值 | 状态 |\n"
-                     "|------|--------|------|--------|------|\n"
-                     "| CoreDNS 请求延迟 | 3200ms | 120ms | <10ms | ⚠️ 偏高 |\n"
-                     "| CoreDNS 副本数 | 1 | 3 | 3 | ✅ 正常 |\n"
-                     "| payment-gateway P99 | 8000ms | 950ms | <400ms | ⚠️ 偏高 |\n"
-                     "| 支付成功率 | 62.3% | 96.1% | >99.5% | ⚠️ 未达标 |\n\n"
-                     "🟡 各项指标**大幅好转**，但仍未完全恢复到正常水位：\n"
-                     "- CoreDNS 延迟 120ms 仍远高于正常值 <10ms\n"
-                     "- 支付成功率 96.1%，低于 SLO 阈值 99.5%\n\n"
-                     "可能还有其他因素影响。建议进一步排查或人工介入。")
+                     "\n恢复验证未完全达标（详见上方卡片），建议人工介入。")
 
-    _wait(5, "等待值班人决定...")
+    _wait(5, "等待值班人...")
 
-    # 值班人在话题下接管
-    _pause("👤 值班人在话题下宣布接管")
+    # 值班人接管
+    _pause("👤 值班人接管")
     _human_reply_in_thread(_msg_ids["alert_a"],
-                           "👤 好的，我来接管这个问题。\n"
-                           "CoreDNS 延迟还是偏高，我怀疑是 CoreDNS 的 Corefile 配置里"
-                           "缓存参数不对，需要我手动排查一下。\n"
+                           f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
+                           "好的，我来接管。CoreDNS 延迟偏高，"
+                           "我怀疑 Corefile 缓存配置有问题，手动排查。\n"
                            "你先不要自动操作了。")
 
-    _wait(3)
+    _wait(2)
 
-    _pause("🤖 Agent 确认移交，停止自动操作")
+    _pause("🤖 Agent 确认移交")
     _reply(_msg_ids["alert_a"],
-           "👤 **问题已移交人工处理**\n\n"
-           f"P-1003 已标记为 **人工处理中**（处理人：{_ONCALL_PERSON_NAME}），"
-           "我将停止自动操作。\n\n"
-           "**当前状态汇总**：\n"
-           "- 根因：CoreDNS OOMKill → DNS 解析超时（已确认）\n"
-           "- 已执行：扩容 CoreDNS 到 3 副本 + 调整内存 limit\n"
-           "- 恢复情况：大幅好转但未完全恢复\n"
-           "- 待排查：CoreDNS Corefile 缓存配置\n\n"
-           "后续排查中有需要数据查询或分析的，随时 @我。🫡")
+           f"🤖 P-1003 已移交 {_ONCALL_PERSON_NAME} 处理，我停止自动操作。\n"
+           "后续需要数据查询随时 @我。🫡")
 
-    _wait(3)
-
-    # ================================================================
-    # 📋 最终汇总
-    # ================================================================
-    _pause("📋 发送值守汇总卡片")
-    _send_card(_build_status_card(
-        "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
-        "takeover",
-        "**处理时间线**：\n"
-        "1. 🚨 告警到达 → Agent 分析\n"
-        "2. ❌ Agent 初判 TLS 证书过期（错误）\n"
-        f"3. 👤 {_ONCALL_PERSON_NAME} 纠偏 → 引导查 DNS\n"
-        "4. ✅ Agent 重新分析 → CoreDNS OOMKill（正确）\n"
-        "5. ⚠️ Agent 方案：删 Pod（有风险）→ ❌ 被拒绝\n"
-        f"6. 👤 {_ONCALL_PERSON_NAME} 修改方案 → 扩容 + 调内存\n"
-        "7. ✅ 执行止损 → 指标大幅好转\n"
-        "8. ⚠️ 恢复验证未达标\n"
-        f"9. 👤 {_ONCALL_PERSON_NAME} 接管，手动排查 Corefile\n\n"
-        "---\n"
-        "**其他问题**：\n"
-        "🔇 P-1004（Kafka 消费延迟）— 已知 bug #ISSUE-456，静默 7 天"))
+    _wait(2)
 
     # ============================================================
     total = time.time() - _start_time
