@@ -165,37 +165,83 @@ def _human_reply_in_thread(parent_msg_id: str, text: str) -> str:
 # 卡片构建：JSON 2.0 + collapsible_panel
 # ============================================================
 
-def _build_alert_card(alert_name, service, severity, summary, alert_id=""):
-    """告警卡片（JSON 1.0 格式，保持简洁）。"""
+def _build_alert_card(alert_name, service, severity, summary, alert_id="",
+                      env="", rule_name="", oncall_users=None,
+                      notify_channel="Lark", tags=None,
+                      dashboard_url="", duration_min=0):
+    """
+    构建丰富的告警卡片，参考 Grafana OnCall 风格。
+
+    参数:
+        alert_name:   告警名称
+        service:      服务名称
+        severity:     严重级别 (critical / warning / info)
+        summary:      告警摘要
+        alert_id:     Alert Group ID
+        env:          环境标识 (prod / staging / dev)
+        rule_name:    告警规则名称
+        oncall_users: 值班人列表 (e.g. ["张三", "李四"])
+        notify_channel: 通知方式 (e.g. "Lark")
+        tags:         标签字典 (e.g. {"_pod_name": "xxx", "host": "n1"})
+        dashboard_url: Dashboard / 详情链接
+        duration_min: 已持续分钟数
+    """
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
-    emoji_map = {"critical": "🔴", "warning": "🟡", "info": "🔵"}
+    severity_label = severity.capitalize() if severity else "Warning"
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
+    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
+
+    elements = []
+
+    # — 基本信息区 —
+    basic_lines = []
+    if alert_id:
+        basic_lines.append(f"**Alert Group:** `{alert_id}`")
+    basic_lines.append(f"**服务:** {service}")
+    if rule_name:
+        basic_lines.append(f"**规则:** {rule_name}")
+    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    if oncall_users:
+        users_str = " ".join(f"👤 {u}" for u in oncall_users)
+        basic_lines.append(f"**值班人:** {users_str}")
+    basic_lines.append(f"**通知方式:** {notify_channel}")
+    elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
+
+    elements.append({"tag": "hr"})
+
+    # — 摘要 —
+    if summary:
+        elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
+
+    # — Tags 区域 —
+    if tags:
+        tag_lines = [f"**Tags:**"]
+        for k, v in tags.items():
+            tag_lines.append(f"  {k}: `{v}`")
+        elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
+
+    elements.append({"tag": "hr"})
+
+    # — 详情链接按钮 —
+    if dashboard_url:
+        elements.append({"tag": "action", "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📋 查看详情"},
+                "type": "primary",
+                "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+            },
+        ]})
+
     return {
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
-            "template": color_map.get(severity, "red"),
+            "template": color_map.get(severity, "orange"),
             "title": {"tag": "plain_text",
-                      "content": f"{emoji_map.get(severity, '🚨')} [触发中] {alert_name}"},
+                      "content": f"[触发中] [{severity_label}] {alert_name}"},
         },
-        "elements": [
-            {"tag": "column_set", "flex_mode": "bisect", "columns": [
-                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                    {"tag": "markdown", "content": f"**服务**: {service}"},
-                ]},
-                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                    {"tag": "markdown", "content": f"**级别**: {severity}"},
-                ]},
-            ]},
-            {"tag": "column_set", "flex_mode": "bisect", "columns": [
-                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                    {"tag": "markdown", "content": f"**时间**: {time.strftime('%H:%M:%S')}"},
-                ]},
-                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                    {"tag": "markdown", "content": f"**Alert Group**: {alert_id or 'N/A'}"},
-                ]},
-            ]},
-            {"tag": "hr"},
-            {"tag": "markdown", "content": f"**摘要**: {summary}"},
-        ],
+        "elements": elements,
     }
 
 
@@ -490,7 +536,14 @@ def run_demo():
     _msg_ids["alert_a"] = _send_card(_build_alert_card(
         "PaymentServiceTimeout", "payment-gateway", "critical",
         "支付服务 P99 延迟从 300ms 飙升至 8000ms，大量支付请求超时",
-        alert_id="AG-30001"))
+        alert_id="AG-30001",
+        env="prod",
+        rule_name="PaymentServiceTimeout",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "payment-gw-5c8f9d7b4-k8x2p",
+              "host": "n124-188-186"},
+        dashboard_url="https://grafana.example.com/d/payment-overview",
+        duration_min=2))
 
     _wait(2, "Agent 检测到新告警...")
 
@@ -709,7 +762,14 @@ def run_demo():
     _msg_ids["alert_b"] = _send_card(_build_alert_card(
         "KafkaConsumerLagHigh", "order-processor", "warning",
         "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+",
-        alert_id="AG-30002"))
+        alert_id="AG-30002",
+        env="prod",
+        rule_name="KafkaConsumerLagHigh",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "consumer_group": "order-events",
+              "host": "n124-190-055"},
+        dashboard_url="https://grafana.example.com/d/kafka-overview",
+        duration_min=5))
 
     _wait(2)
 
@@ -747,7 +807,8 @@ def run_demo():
         "body": {
             "elements": [
                 {"tag": "markdown",
-                 "content": "🤖 暂时无法确定根因，需要值班人提供线索：\n"
+                 "content": "📝 已创建问题 **P-1004**\n\n"
+                            "🤖 暂时无法确定根因，需要值班人提供线索：\n"
                             "- order-processor 最近是否有发版？\n"
                             "- 是否有已知 bug 与此相关？"},
                 {"tag": "hr"},
@@ -786,9 +847,7 @@ def run_demo():
     _pause("👤 值班人告知：已知 bug，静默即可")
     _human_reply_in_thread(_msg_ids["alert_b"],
                            f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
-                           "这个我知道，上周三发版引入的 N+1 查询 bug。"
-                           "修复 MR 已提交（#ISSUE-456），下周一修。\n"
-                           "**关联 ISSUE-456，静默 7 天**就行。")
+                           "这个是上周三发版引入的 bug，修复 MR 已提交，下周一发版。")
 
     _wait(2)
 
