@@ -27,6 +27,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 # ============================================================
 # 路径初始化
@@ -91,6 +92,18 @@ def _parse_args():
 
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
+PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+
+
+def _problem_link(pid: str) -> str:
+    """将问题编号转为飞书 markdown 超链接；未配置 URL 时退化为加粗文本。"""
+    if PROBLEM_BASE_URL:
+        raw_url = f"{PROBLEM_BASE_URL}#{pid}"
+        applink = f"https://applink.feishu.cn/client/web_url/open?mode=sidebar-semi&url={quote(raw_url, safe='')}"
+        return f"[{pid}]({applink})"
+    return f"**{pid}**"
+
+
 _msg_ids = {}
 _start_time = 0.0
 _oncall_open_id = None
@@ -169,23 +182,6 @@ def _build_alert_card(alert_name, service, severity, summary, alert_id="",
                       env="", rule_name="", oncall_users=None,
                       notify_channel="Lark", tags=None,
                       dashboard_url="", duration_min=0):
-    """
-    构建丰富的告警卡片，参考 Grafana OnCall 风格。
-
-    参数:
-        alert_name:   告警名称
-        service:      服务名称
-        severity:     严重级别 (critical / warning / info)
-        summary:      告警摘要
-        alert_id:     Alert Group ID
-        env:          环境标识 (prod / staging / dev)
-        rule_name:    告警规则名称
-        oncall_users: 值班人列表 (e.g. ["张三", "李四"])
-        notify_channel: 通知方式 (e.g. "Lark")
-        tags:         标签字典 (e.g. {"_pod_name": "xxx", "host": "n1"})
-        dashboard_url: Dashboard / 详情链接
-        duration_min: 已持续分钟数
-    """
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -194,7 +190,6 @@ def _build_alert_card(alert_name, service, severity, summary, alert_id="",
 
     elements = []
 
-    # — 基本信息区 —
     basic_lines = []
     if alert_id:
         basic_lines.append(f"**Alert Group:** `{alert_id}`")
@@ -210,38 +205,268 @@ def _build_alert_card(alert_name, service, severity, summary, alert_id="",
 
     elements.append({"tag": "hr"})
 
-    # — 摘要 —
     if summary:
         elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
 
-    # — Tags 区域 —
     if tags:
-        tag_lines = [f"**Tags:**"]
+        tag_lines = ["**Tags:**"]
         for k, v in tags.items():
             tag_lines.append(f"  {k}: `{v}`")
         elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
 
     elements.append({"tag": "hr"})
 
-    # — 详情链接按钮 —
+    actions_column = []
+    actions_column.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "📢 ACK"},
+        "type": "primary_filled",
+        "behaviors": [{"type": "callback", "value": {
+            "action": "ack", "alert_id": alert_id}}],
+    })
+    actions_column.append({
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+        "options": [
+            {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+            {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+            {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+            {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+        ],
+        "width": "120px",
+        "behaviors": [{"type": "callback", "value": {
+            "action": "silence", "alert_id": alert_id}}],
+    })
     if dashboard_url:
-        elements.append({"tag": "action", "actions": [
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📋 查看详情"},
-                "type": "primary",
-                "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
-            },
-        ]})
+        actions_column.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📋 详情"},
+            "type": "primary",
+            "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+        })
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": [
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[0]]},
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[1]]},
+        ] + ([
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[2]]}
+        ] if dashboard_url else []),
+    })
 
     return {
+        "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "template": color_map.get(severity, "orange"),
             "title": {"tag": "plain_text",
                       "content": f"[触发中] [{severity_label}] {alert_name}"},
         },
-        "elements": elements,
+        "body": {"elements": elements},
+    }
+
+
+def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id="",
+                                env="", rule_name="", oncall_users=None,
+                                notify_channel="Lark", tags=None,
+                                dashboard_url="", duration_min=0,
+                                resolve_note="", alert_time=None):
+    severity_label = severity.capitalize() if severity else "Warning"
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
+    if alert_time:
+        elapsed_sec = time.time() - alert_time
+        elapsed_min = int(elapsed_sec / 60)
+        resolve_time_text = f"{now_str}（持续{elapsed_min}min）"
+    else:
+        resolve_time_text = now_str
+    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
+
+    elements = []
+
+    basic_lines = []
+    if alert_id:
+        basic_lines.append(f"**Alert Group:** `{alert_id}`")
+    basic_lines.append(f"**服务:** {service}")
+    if rule_name:
+        basic_lines.append(f"**规则:** {rule_name}")
+    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    basic_lines.append(f"**恢复时间:** {resolve_time_text}")
+    if oncall_users:
+        users_str = " ".join(f"👤 {u}" for u in oncall_users)
+        basic_lines.append(f"**值班人:** {users_str}")
+    basic_lines.append(f"**通知方式:** {notify_channel}")
+    elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
+
+    elements.append({"tag": "hr"})
+
+    if summary:
+        elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
+
+    if tags:
+        tag_lines = ["**Tags:**"]
+        for k, v in tags.items():
+            tag_lines.append(f"  {k}: `{v}`")
+        elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
+
+    if resolve_note:
+        elements.append({"tag": "markdown", "content": f"**恢复说明:** {resolve_note}"})
+
+    elements.append({"tag": "hr"})
+
+    action_cols = [
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "button",
+             "text": {"tag": "plain_text", "content": "✅ 已ACK"},
+             "type": "default",
+             "disabled": True,
+             "disabled_tips": {"tag": "plain_text", "content": "告警已恢复"},
+         }]},
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "select_static",
+             "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+             "initial_option": "30 min",
+             "disabled": True,
+             "options": [
+                 {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+                 {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+                 {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+                 {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+             ],
+             "width": "120px",
+             "behaviors": [{"type": "callback", "value": {"action": "silence"}}],
+         }]},
+    ]
+    if dashboard_url:
+        action_cols.append(
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [{
+                 "tag": "button",
+                 "text": {"tag": "plain_text", "content": "📋 详情"},
+                 "type": "primary",
+                 "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+             }]})
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": action_cols,
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text",
+                      "content": f"[已恢复] [{severity_label}] {alert_name}"},
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
+                            env="", rule_name="", oncall_users=None,
+                            notify_channel="Lark", tags=None,
+                            dashboard_url="", duration_min=0,
+                            silence_duration="30 min"):
+    color_map = {"critical": "red", "warning": "orange", "info": "blue"}
+    severity_label = severity.capitalize() if severity else "Warning"
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
+    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
+
+    elements = []
+
+    basic_lines = []
+    if alert_id:
+        basic_lines.append(f"**Alert Group:** `{alert_id}`")
+    basic_lines.append(f"**服务:** {service}")
+    if rule_name:
+        basic_lines.append(f"**规则:** {rule_name}")
+    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    if oncall_users:
+        users_str = " ".join(f"👤 {u}" for u in oncall_users)
+        basic_lines.append(f"**值班人:** {users_str}")
+    basic_lines.append(f"**通知方式:** {notify_channel}")
+    elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
+
+    elements.append({"tag": "hr"})
+
+    if summary:
+        elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
+
+    if tags:
+        tag_lines = ["**Tags:**"]
+        for k, v in tags.items():
+            tag_lines.append(f"  {k}: `{v}`")
+        elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
+
+    elements.append({"tag": "hr"})
+
+    action_cols = [
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "button",
+             "text": {"tag": "plain_text", "content": "✅ 已ACK"},
+             "type": "default",
+             "disabled": True,
+             "disabled_tips": {"tag": "plain_text", "content": "已确认告警"},
+         }]},
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "select_static",
+             "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+             "initial_option": silence_duration,
+             "disabled": True,
+             "options": [
+                 {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+                 {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+                 {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+                 {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+             ],
+             "width": "120px",
+             "behaviors": [{"type": "callback", "value": {"action": "silence"}}],
+         }]},
+    ]
+    if dashboard_url:
+        action_cols.append(
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [{
+                 "tag": "button",
+                 "text": {"tag": "plain_text", "content": "📋 详情"},
+                 "type": "primary",
+                 "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+             }]})
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": action_cols,
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": color_map.get(severity, "orange"),
+            "title": {"tag": "plain_text",
+                      "content": f"[处理中] [{severity_label}] {alert_name}"},
+        },
+        "body": {"elements": elements},
     }
 
 
@@ -517,6 +742,7 @@ def _build_status_card(problem_id, title, status, body):
 def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
+    _alert_times = {}
 
     member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
     if member:
@@ -544,12 +770,23 @@ def run_demo():
               "host": "n124-188-186"},
         dashboard_url="https://grafana.example.com/d/payment-overview",
         duration_min=2))
+    _alert_times["alert_a"] = time.time()
 
     _wait(2, "Agent 检测到新告警...")
 
     # Agent 简短回复 + 发分析卡片
     _pause("🤖 Agent 回复并发出分析卡片")
     _reply(_msg_ids["alert_a"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
+
+    _update_card(_msg_ids["alert_a"], _build_alert_card_acked(
+        "PaymentServiceTimeout", "payment-gateway", "critical",
+        "支付服务 P99 延迟从 300ms 飙升至 8000ms，大量支付请求超时",
+        alert_id="AG-30001", env="prod", rule_name="PaymentServiceTimeout",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "payment-gw-5c8f9d7b4-k8x2p",
+              "host": "n124-188-186"},
+        dashboard_url="https://grafana.example.com/d/payment-overview",
+        duration_min=2))
 
     _wait(2)
 
@@ -577,7 +814,7 @@ def run_demo():
         "P-1003", "支付网关响应超时",
         "**根因定位**：payment-gateway 的 **TLS 证书可能过期**，"
         "导致与上游支付渠道的 HTTPS 握手失败。\n\n"
-        "📝 已创建问题 **P-1003**\n"
+        f"📝 已创建问题 {_problem_link('P-1003')}\n"
         "⚠️ 置信度中等，请值班人确认。如有误请纠正。",
         analysis_steps_v1_done,
         "⭐⭐⭐ (60%) — 中等",
@@ -770,10 +1007,21 @@ def run_demo():
               "host": "n124-190-055"},
         dashboard_url="https://grafana.example.com/d/kafka-overview",
         duration_min=5))
+    _alert_times["alert_b"] = time.time()
 
     _wait(2)
 
     _reply(_msg_ids["alert_b"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
+
+    _update_card(_msg_ids["alert_b"], _build_alert_card_acked(
+        "KafkaConsumerLagHigh", "order-processor", "warning",
+        "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+",
+        alert_id="AG-30002", env="prod", rule_name="KafkaConsumerLagHigh",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "consumer_group": "order-events",
+              "host": "n124-190-055"},
+        dashboard_url="https://grafana.example.com/d/kafka-overview",
+        duration_min=5))
 
     _wait(2)
 
@@ -801,13 +1049,13 @@ def run_demo():
         "header": {
             "template": "orange",
             "title": {"tag": "plain_text",
-                      "content": "❓ 需要协助 — P-1004"},
+                      "content": f"❓ 需要协助 — {_problem_link('P-1004')}"},
             "subtitle": {"tag": "plain_text", "content": "Kafka 消费延迟异常"},
         },
         "body": {
             "elements": [
                 {"tag": "markdown",
-                 "content": "📝 已创建问题 **P-1004**\n\n"
+                 "content": f"📝 已创建问题 {_problem_link('P-1004')}\n\n"
                             "🤖 暂时无法确定根因，需要值班人提供线索：\n"
                             "- order-processor 最近是否有发版？\n"
                             "- 是否有已知 bug 与此相关？"},
@@ -866,7 +1114,7 @@ def run_demo():
     exec_kafka_done_steps = (
         "1. ✅ 关联 ISSUE-456\n"
         "2. ✅ 报警规则 KafkaConsumerLagHigh 静默 7 天\n"
-        "3. ✅ P-1004 标记为 Resolved"
+        f"3. ✅ {_problem_link('P-1004')} 标记为 Resolved"
     )
     exec_kafka_result = (
         "**执行结果**：全部 3 个步骤执行成功 ✅\n\n"
@@ -874,7 +1122,7 @@ def run_demo():
         "|------|------|\n"
         "| 关联 ISSUE-456 | ✅ 已关联 |\n"
         "| 报警规则静默 | ✅ 静默 7 天 |\n"
-        "| P-1004 状态 | ✅ Resolved |"
+        f"| {_problem_link('P-1004')} 状态 | ✅ Resolved |"
     )
     _update_card(_msg_ids["exec_kafka"],
                  _build_execution_card_done(
@@ -882,6 +1130,21 @@ def run_demo():
                      exec_kafka_result, exec_kafka_done_steps))
 
     _wait(1)
+
+    # 告警B已恢复：将原始报警卡片更新为绿色「已恢复」状态
+    _update_card(_msg_ids["alert_b"], _build_alert_card_resolved(
+        "KafkaConsumerLagHigh", "order-processor", "warning",
+        "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+",
+        alert_id="AG-30002",
+        env="prod",
+        rule_name="KafkaConsumerLagHigh",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "consumer_group": "order-events",
+              "host": "n124-190-055"},
+        dashboard_url="https://grafana.example.com/d/kafka-overview",
+        duration_min=5,
+        resolve_note="已知 bug（ISSUE-456），报警规则已静默 7 天",
+        alert_time=_alert_times.get("alert_b")))
 
     _reply_card_in_thread(_msg_ids["alert_b"], _build_status_card(
         "P-1004", "Kafka 消费延迟异常",
@@ -961,7 +1224,7 @@ def run_demo():
 
     _pause("🤖 Agent 确认移交")
     _reply(_msg_ids["alert_a"],
-           f"🤖 P-1003 已移交 {_ONCALL_PERSON_NAME} 处理，我停止自动操作。\n"
+           f"🤖 {_problem_link('P-1003')} 已移交 {_ONCALL_PERSON_NAME} 处理，我停止自动操作。\n"
            "后续需要数据查询随时 @我。🫡")
 
     _wait(2)

@@ -988,11 +988,35 @@ function showList() {
 
 // ==================== 初始化 ====================
 
+function _extractProblemId() {
+  const hash = window.location.hash.replace('#', '');
+  if (hash && /^P-\d+$/i.test(hash)) return hash;
+  const params = new URLSearchParams(window.location.search);
+  const qid = params.get('id');
+  if (qid && /^P-\d+$/i.test(qid)) return qid;
+  const m = window.location.href.match(/%23(P-\d+)/i);
+  if (m) return m[1];
+  return null;
+}
+
 async function loadAndRender() {
   allProblems = await fetchProblems();
   renderStats();
   renderList();
+  const pid = _extractProblemId();
+  if (pid) {
+    const target = allProblems.find(p => p.id === pid);
+    if (target) showDetail(pid);
+  }
 }
+
+window.addEventListener('hashchange', () => {
+  const pid = _extractProblemId();
+  if (pid) {
+    const target = allProblems.find(p => p.id === pid);
+    if (target) showDetail(pid);
+  }
+});
 
 document.getElementById('filterBar').addEventListener('click', (e) => {
   const chip = e.target.closest('.filter-chip');

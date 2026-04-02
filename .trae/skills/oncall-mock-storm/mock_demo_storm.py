@@ -2,23 +2,38 @@
 """
 值班虚拟员工 Mock 演示 — 报警风暴版
 
-模拟基础设施故障引发大规模报警风暴：K8s 节点资源耗尽导致 5 条告警在 30 秒内密集到达。
-Agent 检测到风暴 → 关联分析 → 批量静默 → 恢复验证。
+模拟基础设施故障引发大规模报警风暴：K8s 节点资源耗尽导致 5 条告警在短时间内密集到达。
 
 三幕场景：
-  Act 1: 报警风暴识别 — 5 条告警密集到达，Agent 检测到风暴模式
-  Act 2: 关联分析 + 风暴归因 — 定位根因为节点资源耗尽，批量静默
-  Act 3: 故障恢复 + 取消静默 — 人工修复后取消静默，恢复验证通过
+  Act 1: 告警密集到达 + Agent 并行分析 + 风暴触发
+         - 告警1-5 陆续密集到达，Agent 对每条都 ACK + 启动独立分析（Agent 可并行处理）
+         - 告警1 的分析卡片先出来；告警2、3 各自也有分析卡片
+         - 当第5条到达时，Agent 内部检测到风暴模式（5条/30秒）
+         - 立即创建 Problem P-2001，发送风暴卡片（群级别）
+         - 中止所有独立分析 → 回到每条告警下通知"已归并至 P-2001"
+         - 在 P-2001 话题内静默所有报警规则
+
+  Act 2: 风暴 RCA + 止损（P-2001 话题内）
+         - Agent 在 P-2001 话题内启动关联分析 → RCA 完成
+         - @值班人建议止损方案 → 值班人确认并去处理
+         - Agent 在话题内记录止损进展
+
+  Act 3: 取消静默 + 恢复验证 + 纠偏（P-2001 话题内）
+         - 值班人通知修复完成 → Agent 取消静默
+         - 恢复验证第1轮：4/5 恢复，ServiceHighLatency 未恢复（纠偏）
+         - Agent 重新分析未恢复告警 → 发现独立根因 → @值班人
+         - 值班人处理 → 第2轮全部恢复 → P-2001 消除
 
 交互特点：
-  - Agent 分析以卡片形式呈现，支持展开/收起查看分析过程
-  - 分析完成后卡片原地更新为结论
-  - 消息精简，不冗长
+  - Agent 并行处理：每条告警独立 ACK + 分析，不存在串行等待
+  - 风暴触发即创建 Problem：归并所有未归属告警 + 静默所有报警规则
+  - 所有风暴处理在 P-2001 话题内：RCA → 止损 → 取消静默 → 验证 → 纠偏
+  - 纠偏逻辑：止损后发现未完全恢复 → 重新分析 → 定位独立根因
 
 用法：
-  python3 mock_demo_storm.py                   # 标准模式（约 3-4 分钟）
+  python3 mock_demo_storm.py                   # 标准模式（约 4-5 分钟）
   python3 mock_demo_storm.py --duration 300    # 指定总时长 5 分钟
-  python3 mock_demo_storm.py --fast            # 快速模式（约 40s）
+  python3 mock_demo_storm.py --fast            # 快速模式（约 50s）
   python3 mock_demo_storm.py --step            # 单步模式（按回车继续）
 """
 
@@ -27,6 +42,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 # ============================================================
 # 路径初始化
@@ -64,8 +80,8 @@ import feishu_api
 # 参数解析与时间配置
 # ============================================================
 
-_BASE_TOTAL_SECONDS = 75.0
-_DEFAULT_DURATION = 210.0
+_BASE_TOTAL_SECONDS = 120.0
+_DEFAULT_DURATION = 300.0
 _ONCALL_PERSON_NAME = "赵欣欣"
 
 
@@ -91,6 +107,17 @@ def _parse_args():
 
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
+PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+
+
+def _problem_link(pid: str) -> str:
+    if PROBLEM_BASE_URL:
+        raw_url = f"{PROBLEM_BASE_URL}#{pid}"
+        applink = f"https://applink.feishu.cn/client/web_url/open?mode=sidebar-semi&url={quote(raw_url, safe='')}"
+        return f"[{pid}]({applink})"
+    return f"**{pid}**"
+
+
 _msg_ids = {}
 _start_time = 0.0
 _oncall_open_id = None
@@ -162,30 +189,13 @@ def _human_reply_in_thread(parent_msg_id: str, text: str) -> str:
 
 
 # ============================================================
-# 卡片构建：JSON 2.0 + collapsible_panel
+# 卡片构建
 # ============================================================
 
 def _build_alert_card(alert_name, service, severity, summary, alert_id="",
                       env="", rule_name="", oncall_users=None,
                       notify_channel="Lark", tags=None,
                       dashboard_url="", duration_min=0):
-    """
-    构建丰富的告警卡片，参考 Grafana OnCall 风格。
-
-    参数:
-        alert_name:   告警名称
-        service:      服务名称
-        severity:     严重级别 (critical / warning / info)
-        summary:      告警摘要
-        alert_id:     Alert Group ID
-        env:          环境标识 (prod / staging / dev)
-        rule_name:    告警规则名称
-        oncall_users: 值班人列表 (e.g. ["张三", "李四"])
-        notify_channel: 通知方式 (e.g. "Lark")
-        tags:         标签字典 (e.g. {"_pod_name": "xxx", "host": "n1"})
-        dashboard_url: Dashboard / 详情链接
-        duration_min: 已持续分钟数
-    """
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -194,7 +204,6 @@ def _build_alert_card(alert_name, service, severity, summary, alert_id="",
 
     elements = []
 
-    # — 基本信息区 —
     basic_lines = []
     if alert_id:
         basic_lines.append(f"**Alert Group:** `{alert_id}`")
@@ -210,43 +219,298 @@ def _build_alert_card(alert_name, service, severity, summary, alert_id="",
 
     elements.append({"tag": "hr"})
 
-    # — 摘要 —
     if summary:
         elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
 
-    # — Tags 区域 —
     if tags:
-        tag_lines = [f"**Tags:**"]
+        tag_lines = ["**Tags:**"]
         for k, v in tags.items():
             tag_lines.append(f"  {k}: `{v}`")
         elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
 
     elements.append({"tag": "hr"})
 
-    # — 详情链接按钮 —
+    actions_column = []
+    actions_column.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "📢 ACK"},
+        "type": "primary_filled",
+        "behaviors": [{"type": "callback", "value": {
+            "action": "ack", "alert_id": alert_id}}],
+    })
+    actions_column.append({
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+        "options": [
+            {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+            {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+            {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+            {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+        ],
+        "width": "120px",
+        "behaviors": [{"type": "callback", "value": {
+            "action": "silence", "alert_id": alert_id}}],
+    })
     if dashboard_url:
-        elements.append({"tag": "action", "actions": [
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📋 查看详情"},
-                "type": "primary",
-                "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
-            },
-        ]})
+        actions_column.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📋 详情"},
+            "type": "primary",
+            "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+        })
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": [
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[0]]},
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[1]]},
+        ] + ([
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [actions_column[2]]}
+        ] if dashboard_url else []),
+    })
 
     return {
+        "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "template": color_map.get(severity, "orange"),
             "title": {"tag": "plain_text",
                       "content": f"[触发中] [{severity_label}] {alert_name}"},
         },
-        "elements": elements,
+        "body": {"elements": elements},
+    }
+
+
+def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id="",
+                                env="", rule_name="", oncall_users=None,
+                                notify_channel="Lark", tags=None,
+                                dashboard_url="", duration_min=0,
+                                resolve_note="", alert_time=None):
+    # 保留原始报警卡片完整内容，仅在"报警时间"下方追加"恢复时间"，header 变绿色 [已恢复]
+    severity_label = severity.capitalize() if severity else "Warning"
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
+    # 根据告警发送时间计算持续时长
+    if alert_time:
+        elapsed_sec = time.time() - alert_time
+        elapsed_min = int(elapsed_sec / 60)
+        resolve_time_text = f"{now_str}（持续{elapsed_min}min）"
+    else:
+        resolve_time_text = now_str
+    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
+
+    elements = []
+
+    basic_lines = []
+    if alert_id:
+        basic_lines.append(f"**Alert Group:** `{alert_id}`")
+    basic_lines.append(f"**服务:** {service}")
+    if rule_name:
+        basic_lines.append(f"**规则:** {rule_name}")
+    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    basic_lines.append(f"**恢复时间:** {resolve_time_text}")
+    if oncall_users:
+        users_str = " ".join(f"👤 {u}" for u in oncall_users)
+        basic_lines.append(f"**值班人:** {users_str}")
+    basic_lines.append(f"**通知方式:** {notify_channel}")
+    elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
+
+    elements.append({"tag": "hr"})
+
+    if summary:
+        elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
+
+    # 保留 Tags 信息，不删除
+    if tags:
+        tag_lines = ["**Tags:**"]
+        for k, v in tags.items():
+            tag_lines.append(f"  {k}: `{v}`")
+        elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
+
+    if resolve_note:
+        elements.append({"tag": "markdown", "content": f"**恢复说明:** {resolve_note}"})
+
+    elements.append({"tag": "hr"})
+
+    action_cols = [
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "button",
+             "text": {"tag": "plain_text", "content": "✅ 已ACK"},
+             "type": "default",
+             "disabled": True,
+             "disabled_tips": {"tag": "plain_text", "content": "告警已恢复"},
+         }]},
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "select_static",
+             "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+             "initial_option": "30 min",
+             "disabled": True,
+             "options": [
+                 {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+                 {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+                 {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+                 {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+             ],
+             "width": "120px",
+             "behaviors": [{"type": "callback", "value": {"action": "silence"}}],
+         }]},
+    ]
+    if dashboard_url:
+        action_cols.append(
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [{
+                 "tag": "button",
+                 "text": {"tag": "plain_text", "content": "📋 详情"},
+                 "type": "primary",
+                 "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+             }]})
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": action_cols,
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text",
+                      "content": f"[已恢复] [{severity_label}] {alert_name}"},
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
+                            env="", rule_name="", oncall_users=None,
+                            notify_channel="Lark", tags=None,
+                            dashboard_url="", duration_min=0,
+                            silence_duration="30 min"):
+    color_map = {"critical": "red", "warning": "orange", "info": "blue"}
+    severity_label = severity.capitalize() if severity else "Warning"
+
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
+    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
+
+    elements = []
+
+    basic_lines = []
+    if alert_id:
+        basic_lines.append(f"**Alert Group:** `{alert_id}`")
+    basic_lines.append(f"**服务:** {service}")
+    if rule_name:
+        basic_lines.append(f"**规则:** {rule_name}")
+    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    if oncall_users:
+        users_str = " ".join(f"👤 {u}" for u in oncall_users)
+        basic_lines.append(f"**值班人:** {users_str}")
+    basic_lines.append(f"**通知方式:** {notify_channel}")
+    elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
+
+    elements.append({"tag": "hr"})
+
+    if summary:
+        elements.append({"tag": "markdown", "content": f"**摘要:** {summary}"})
+
+    if tags:
+        tag_lines = ["**Tags:**"]
+        for k, v in tags.items():
+            tag_lines.append(f"  {k}: `{v}`")
+        elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
+
+    elements.append({"tag": "hr"})
+
+    action_cols = [
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "button",
+             "text": {"tag": "plain_text", "content": "✅ 已ACK"},
+             "type": "default",
+             "disabled": True,
+             "disabled_tips": {"tag": "plain_text", "content": "已确认告警"},
+         }]},
+        {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+         "elements": [{
+             "tag": "select_static",
+             "placeholder": {"tag": "plain_text", "content": "🔇 静默"},
+             "initial_option": silence_duration,
+             "disabled": True,
+             "options": [
+                 {"text": {"tag": "plain_text", "content": "30 min"}, "value": "30m"},
+                 {"text": {"tag": "plain_text", "content": "1 hour"}, "value": "1h"},
+                 {"text": {"tag": "plain_text", "content": "2 hours"}, "value": "2h"},
+                 {"text": {"tag": "plain_text", "content": "4 hours"}, "value": "4h"},
+             ],
+             "width": "120px",
+             "behaviors": [{"type": "callback", "value": {"action": "silence"}}],
+         }]},
+    ]
+    if dashboard_url:
+        action_cols.append(
+            {"tag": "column", "width": "auto", "weight": 1, "vertical_align": "center",
+             "elements": [{
+                 "tag": "button",
+                 "text": {"tag": "plain_text", "content": "📋 详情"},
+                 "type": "primary",
+                 "behaviors": [{"type": "open_url", "default_url": dashboard_url}],
+             }]})
+
+    elements.append({
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "background_style": "default",
+        "horizontal_spacing": "8px",
+        "columns": action_cols,
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": color_map.get(severity, "orange"),
+            "title": {"tag": "plain_text",
+                      "content": f"[处理中] [{severity_label}] {alert_name}"},
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _build_storm_problem_card_resolved(problem_id, alert_count, service_count,
+                                        duration_sec, alerts_list_md, resolve_note=""):
+    # 构建"已恢复"状态的风暴问题卡片（绿色），用于问题消除后更新原风暴卡片
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text",
+                      "content": f"[已恢复] 🌪️ {problem_id} 报警风暴 — "
+                                 f"{alert_count} 条告警 / {duration_sec}s"},
+        },
+        "elements": [
+            {"tag": "markdown",
+             "content": f"**{duration_sec} 秒**内收到 **{alert_count} 条告警**，"
+                        f"涉及 **{service_count} 个服务**。\n\n"
+                        f"✅ 问题已消除\n"
+                        f"{'**恢复说明:** ' + resolve_note if resolve_note else ''}"},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": alerts_list_md},
+        ],
     }
 
 
 def _build_analysis_card_thinking(problem_id, title, steps_md):
-    """分析中卡片：蓝色头 + 分析过程在折叠面板里（JSON 2.0）。"""
     return {
         "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
@@ -287,7 +551,6 @@ def _build_analysis_card_thinking(problem_id, title, steps_md):
 
 def _build_analysis_card_done(problem_id, title, conclusion_md,
                               steps_md, confidence, color="orange"):
-    """分析完成卡片：显示结论 + 分析过程可折叠（JSON 2.0）。"""
     return {
         "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
@@ -328,6 +591,71 @@ def _build_analysis_card_done(problem_id, title, conclusion_md,
     }
 
 
+def _build_analysis_card_aborted(alert_id, title, steps_md, problem_id):
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "grey",
+            "title": {"tag": "plain_text",
+                      "content": f"⏹️ 分析已中止 — {alert_id}"},
+            "subtitle": {"tag": "plain_text",
+                         "content": f"已归并至 {problem_id}"},
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown",
+                 "content": f"🤖 检测到报警风暴，已中止独立分析，"
+                            f"归并至 {_problem_link(problem_id)} 统一处理。"},
+                {
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {
+                        "title": {"tag": "plain_text",
+                                  "content": "查看中止前的分析步骤"},
+                        "vertical_align": "center",
+                        "icon": {"tag": "standard_icon",
+                                 "token": "down-small-ccm_outlined",
+                                 "size": "16px 16px"},
+                        "icon_position": "follow_text",
+                        "icon_expanded_angle": -180,
+                    },
+                    "border": {"color": "grey", "corner_radius": "5px"},
+                    "vertical_spacing": "8px",
+                    "padding": "8px 8px 8px 8px",
+                    "elements": [
+                        {"tag": "markdown", "content": steps_md},
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _build_storm_problem_card(problem_id, alert_count, service_count,
+                              duration_sec, alerts_list_md):
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text",
+                      "content": f"🌪️ {problem_id} 报警风暴 — "
+                                 f"{alert_count} 条告警 / {duration_sec}s"},
+        },
+        "elements": [
+            {"tag": "markdown",
+             "content": f"**{duration_sec} 秒**内收到 **{alert_count} 条告警**，"
+                        f"涉及 **{service_count} 个服务**。\n\n"
+                        f"📝 已创建问题 {_problem_link(problem_id)}\n"
+                        f"🔗 已将 {alert_count} 条告警全部归并至本 Problem\n"
+                        "🔇 已静默所有相关报警规则\n"
+                        "🔍 启动风暴模式 RCA 分析"},
+            {"tag": "hr"},
+            {"tag": "markdown", "content": alerts_list_md},
+        ],
+    }
+
+
 def _build_status_card(problem_id, title, status, body):
     status_config = {
         "resolved": ("green", "🎉", "已消除"),
@@ -339,7 +667,8 @@ def _build_status_card(problem_id, title, status, body):
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "template": color,
-            "title": {"tag": "plain_text", "content": f"{emoji} {problem_id} {text}"},
+            "title": {"tag": "plain_text",
+                      "content": f"{emoji} {problem_id} {text}"},
         },
         "elements": [
             {"tag": "markdown", "content": f"**问题**: {title}"},
@@ -350,7 +679,6 @@ def _build_status_card(problem_id, title, status, body):
 
 
 def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
-    """恢复验证卡片：累积展示多轮验证结果（JSON 2.0，可更新）。"""
     status_map = {
         "verifying": ("orange", "📉 恢复验证中"),
         "passed": ("green", "✅ 恢复完成"),
@@ -374,24 +702,62 @@ def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
     }
 
 
-def _build_storm_summary_card(alert_count, service_count, duration_sec, alerts_table_md):
-    """报警风暴检测摘要卡片：红色头，展示风暴统计和告警列表。"""
-    return {
-        "config": {"update_multi": True, "wide_screen_mode": True},
-        "header": {
-            "template": "red",
-            "title": {"tag": "plain_text",
-                      "content": f"⚠️ 报警风暴检测 — {alert_count} 条告警 / {duration_sec} 秒"},
-        },
-        "elements": [
-            {"tag": "markdown",
-             "content": f"过去 {duration_sec} 秒内收到 **{alert_count} 条告警**，"
-                        f"涉及 **{service_count} 个服务**，触发报警风暴模式。\n\n"
-                        "已暂停逐个分析，转为关联分析。"},
-            {"tag": "hr"},
-            {"tag": "markdown", "content": alerts_table_md},
-        ],
-    }
+# ============================================================
+# 告警定义
+# ============================================================
+
+ALERTS = [
+    {
+        "key": "alert_1", "name": "NodeHighCPU", "service": "k8s-node-pool",
+        "severity": "critical", "alert_id": "AG-40001",
+        "summary": "K8s 节点 n128-052-031 CPU 使用率 98.7%",
+        "rule_name": "NodeHighCPU",
+        "tags": {"_env": "prod", "_pod_name": "node-exporter-xz9k2",
+                 "host": "n128-052-031", "node": "n128-052-031"},
+        "dashboard_url": "https://grafana.example.com/d/k8s-node-overview",
+        "duration_min": 1,
+    },
+    {
+        "key": "alert_2", "name": "PodCrashLoopBackOff", "service": "checkoutservice",
+        "severity": "critical", "alert_id": "AG-40002",
+        "summary": "Pod checkout-7b5f8d9c6-x2k9m CrashLoopBackOff 重启 5 次",
+        "rule_name": "PodCrashLoopBackOff",
+        "tags": {"_env": "prod", "_pod_name": "checkout-7b5f8d9c6-x2k9m",
+                 "host": "n128-052-031", "node": "n128-052-031"},
+        "dashboard_url": "https://grafana.example.com/d/k8s-pod-overview",
+        "duration_min": 0,
+    },
+    {
+        "key": "alert_3", "name": "ServiceHighErrorRate", "service": "adservice",
+        "severity": "warning", "alert_id": "AG-40003",
+        "summary": "adservice 错误率从 0.1% 飙升至 45%",
+        "rule_name": "ServiceHighErrorRate",
+        "tags": {"_env": "prod", "_pod_name": "adservice-6f4b8c7d5-m3n7p",
+                 "host": "n128-052-031", "node": "n128-052-031"},
+        "dashboard_url": "https://grafana.example.com/d/adservice-overview",
+        "duration_min": 0,
+    },
+    {
+        "key": "alert_4", "name": "PodOOMKilled", "service": "cartservice",
+        "severity": "critical", "alert_id": "AG-40004",
+        "summary": "cartservice Pod 因 OOM 被连续 Kill",
+        "rule_name": "PodOOMKilled",
+        "tags": {"_env": "prod", "_pod_name": "cartservice-5d9f8b7c4-q8r2s",
+                 "host": "n128-052-031", "node": "n128-052-031"},
+        "dashboard_url": "https://grafana.example.com/d/k8s-pod-overview",
+        "duration_min": 0,
+    },
+    {
+        "key": "alert_5", "name": "ServiceHighLatency", "service": "productcatalogservice",
+        "severity": "warning", "alert_id": "AG-40005",
+        "summary": "商品服务 P99 延迟从 80ms 升至 4200ms",
+        "rule_name": "ServiceHighLatency",
+        "tags": {"_env": "prod", "_pod_name": "productcatalog-8c6d7e5f3-v4w1x",
+                 "host": "n128-052-031", "node": "n128-052-031"},
+        "dashboard_url": "https://grafana.example.com/d/productcatalog-overview",
+        "duration_min": 0,
+    },
+]
 
 
 # ============================================================
@@ -401,6 +767,7 @@ def _build_storm_summary_card(alert_count, service_count, duration_sec, alerts_t
 def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
+    _alert_times = {}
 
     member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
     if member:
@@ -410,330 +777,550 @@ def run_demo():
         print(f"  ⚠️ 未在群里找到 {_ONCALL_PERSON_NAME}，将以文本方式 @")
 
     # ================================================================
-    # 🎬 ACT 1: 报警风暴识别 (~20s base)
+    # 🎬 ACT 1: 告警密集到达 + Agent 并行分析 + 风暴触发 (~40s base)
+    #
+    # Agent 是并行处理的：每条告警到达后都独立 ACK + 启动分析。
+    # 当第5条告警到达时触发风暴检测 → 创建 Problem → 归并 + 静默。
     # ================================================================
     print(f"\n  {'━' * 50}")
-    print(f"  🎬 第一幕：报警风暴识别")
+    print(f"  🎬 第一幕：告警密集到达 + Agent 并行分析 + 风暴触发")
     print(f"  {'━' * 50}")
 
-    # --- 告警 1: NodeHighCPU ---
-    _pause("🚨 告警1到达：NodeHighCPU (Critical)")
+    # --- 告警 1: NodeHighCPU → Agent ACK + 开始分析 ---
+    a1 = ALERTS[0]
+    _pause(f"🚨 告警1到达：{a1['name']} ({a1['severity'].capitalize()})")
     _msg_ids["alert_1"] = _send_card(_build_alert_card(
-        "NodeHighCPU", "k8s-node-pool", "critical",
-        "K8s 节点 n128-052-031 CPU 使用率 98.7%",
-        alert_id="AG-40001",
-        env="prod",
-        rule_name="NodeHighCPU",
-        oncall_users=["赵欣欣"],
-        tags={"_env": "prod", "_pod_name": "node-exporter-xz9k2",
-              "host": "n128-052-031", "node": "n128-052-031"},
-        dashboard_url="https://grafana.example.com/d/k8s-node-overview",
-        duration_min=1))
+        a1["name"], a1["service"], a1["severity"], a1["summary"],
+        alert_id=a1["alert_id"], env="prod", rule_name=a1["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a1["tags"],
+        dashboard_url=a1["dashboard_url"], duration_min=a1["duration_min"]))
+    _alert_times["alert_1"] = time.time()
 
-    _wait(2, "Agent 检测到新告警...")
-
-    _pause("🤖 Agent ACK 告警1")
+    _wait(1)
+    _pause("🤖 Agent ACK 告警1 + 开始独立分析")
     _reply(_msg_ids["alert_1"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
+    _update_card(_msg_ids["alert_1"], _build_alert_card_acked(
+        a1["name"], a1["service"], a1["severity"], a1["summary"],
+        alert_id=a1["alert_id"], env="prod", rule_name=a1["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a1["tags"],
+        dashboard_url=a1["dashboard_url"], duration_min=a1["duration_min"]))
+    _wait(1)
 
-    # --- 告警 2: PodCrashLoopBackOff ---
-    _wait(2)
-    _pause("🚨 告警2到达：PodCrashLoopBackOff (Critical)")
+    analysis_1_steps = (
+        "1. ✅ 查询节点指标: CPU 98.7%, 内存 96.2%\n"
+        "2. ⏳ 查询 kubelet 日志..."
+    )
+    _msg_ids["analysis_1"] = _reply_card_in_thread(
+        _msg_ids["alert_1"],
+        _build_analysis_card_thinking("AG-40001", "NodeHighCPU 分析", analysis_1_steps))
+
+    _wait(3, "Agent 并行分析 AG-40001...")
+
+    # --- 告警 2: PodCrashLoopBackOff → Agent 也独立 ACK + 分析 ---
+    a2 = ALERTS[1]
+    _pause(f"🚨 告警2到达：{a2['name']} ({a2['severity'].capitalize()})")
     _msg_ids["alert_2"] = _send_card(_build_alert_card(
-        "PodCrashLoopBackOff", "checkoutservice", "critical",
-        "Pod checkout-7b5f8d9c6-x2k9m CrashLoopBackOff 重启 5 次",
-        alert_id="AG-40002",
-        env="prod",
-        rule_name="PodCrashLoopBackOff",
-        oncall_users=["赵欣欣"],
-        tags={"_env": "prod", "_pod_name": "checkout-7b5f8d9c6-x2k9m",
-              "host": "n128-052-031", "node": "n128-052-031"},
-        dashboard_url="https://grafana.example.com/d/k8s-pod-overview",
-        duration_min=0))
+        a2["name"], a2["service"], a2["severity"], a2["summary"],
+        alert_id=a2["alert_id"], env="prod", rule_name=a2["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a2["tags"],
+        dashboard_url=a2["dashboard_url"], duration_min=a2["duration_min"]))
+    _alert_times["alert_2"] = time.time()
 
     _wait(1)
     _reply(_msg_ids["alert_2"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
-
-    # --- 告警 3: ServiceHighErrorRate ---
+    _update_card(_msg_ids["alert_2"], _build_alert_card_acked(
+        a2["name"], a2["service"], a2["severity"], a2["summary"],
+        alert_id=a2["alert_id"], env="prod", rule_name=a2["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a2["tags"],
+        dashboard_url=a2["dashboard_url"], duration_min=a2["duration_min"]))
     _wait(1)
-    _pause("🚨 告警3到达：ServiceHighErrorRate (Warning)")
+
+    analysis_2_steps = (
+        "1. ✅ Pod 状态: CrashLoopBackOff, 重启 5 次\n"
+        "2. ⏳ 查询 Pod 日志和事件..."
+    )
+    _msg_ids["analysis_2"] = _reply_card_in_thread(
+        _msg_ids["alert_2"],
+        _build_analysis_card_thinking("AG-40002", "PodCrashLoopBackOff 分析",
+                                      analysis_2_steps))
+
+    _wait(2, "Agent 并行分析 AG-40001 + AG-40002...")
+
+    # --- 告警 3: ServiceHighErrorRate → Agent 继续并行分析 ---
+    a3 = ALERTS[2]
+    _pause(f"🚨 告警3到达：{a3['name']} ({a3['severity'].capitalize()})")
     _msg_ids["alert_3"] = _send_card(_build_alert_card(
-        "ServiceHighErrorRate", "adservice", "warning",
-        "adservice 错误率从 0.1% 飙升至 45%",
-        alert_id="AG-40003",
-        env="prod",
-        rule_name="ServiceHighErrorRate",
-        oncall_users=["赵欣欣"],
-        tags={"_env": "prod", "_pod_name": "adservice-6f4b8c7d5-m3n7p",
-              "host": "n128-052-031", "node": "n128-052-031"},
-        dashboard_url="https://grafana.example.com/d/adservice-overview",
-        duration_min=0))
+        a3["name"], a3["service"], a3["severity"], a3["summary"],
+        alert_id=a3["alert_id"], env="prod", rule_name=a3["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a3["tags"],
+        dashboard_url=a3["dashboard_url"], duration_min=a3["duration_min"]))
+    _alert_times["alert_3"] = time.time()
 
     _wait(1)
     _reply(_msg_ids["alert_3"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
-
-    # --- 告警 4: PodOOMKilled ---
+    _update_card(_msg_ids["alert_3"], _build_alert_card_acked(
+        a3["name"], a3["service"], a3["severity"], a3["summary"],
+        alert_id=a3["alert_id"], env="prod", rule_name=a3["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a3["tags"],
+        dashboard_url=a3["dashboard_url"], duration_min=a3["duration_min"]))
     _wait(1)
-    _pause("🚨 告警4到达：PodOOMKilled (Critical)")
+
+    analysis_3_steps = (
+        "1. ✅ 错误率: 0.1% → 45%\n"
+        "2. ⏳ 查询错误日志分布..."
+    )
+    _msg_ids["analysis_3"] = _reply_card_in_thread(
+        _msg_ids["alert_3"],
+        _build_analysis_card_thinking("AG-40003", "ServiceHighErrorRate 分析",
+                                      analysis_3_steps))
+
+    _wait(2, "Agent 并行分析 3 条告警...")
+
+    # --- 告警 4: PodOOMKilled → Agent ACK + 开始分析 ---
+    a4 = ALERTS[3]
+    _pause(f"🚨 告警4到达：{a4['name']} ({a4['severity'].capitalize()})")
     _msg_ids["alert_4"] = _send_card(_build_alert_card(
-        "PodOOMKilled", "cartservice", "critical",
-        "cartservice Pod 因 OOM 被连续 Kill",
-        alert_id="AG-40004",
-        env="prod",
-        rule_name="PodOOMKilled",
-        oncall_users=["赵欣欣"],
-        tags={"_env": "prod", "_pod_name": "cartservice-5d9f8b7c4-q8r2s",
-              "host": "n128-052-031", "node": "n128-052-031"},
-        dashboard_url="https://grafana.example.com/d/k8s-pod-overview",
-        duration_min=0))
+        a4["name"], a4["service"], a4["severity"], a4["summary"],
+        alert_id=a4["alert_id"], env="prod", rule_name=a4["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a4["tags"],
+        dashboard_url=a4["dashboard_url"], duration_min=a4["duration_min"]))
+    _alert_times["alert_4"] = time.time()
 
     _wait(1)
     _reply(_msg_ids["alert_4"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
+    _update_card(_msg_ids["alert_4"], _build_alert_card_acked(
+        a4["name"], a4["service"], a4["severity"], a4["summary"],
+        alert_id=a4["alert_id"], env="prod", rule_name=a4["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a4["tags"],
+        dashboard_url=a4["dashboard_url"], duration_min=a4["duration_min"]))
 
-    # --- 告警 5: ServiceHighLatency ---
     _wait(1)
-    _pause("🚨 告警5到达：ServiceHighLatency (Warning)")
+
+    # --- 告警 5: ServiceHighLatency → 第5条到达，触发风暴 ---
+    a5 = ALERTS[4]
+    _pause(f"🚨 告警5到达：{a5['name']} ({a5['severity'].capitalize()}) → 触发风暴检测")
     _msg_ids["alert_5"] = _send_card(_build_alert_card(
+        a5["name"], a5["service"], a5["severity"], a5["summary"],
+        alert_id=a5["alert_id"], env="prod", rule_name=a5["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a5["tags"],
+        dashboard_url=a5["dashboard_url"], duration_min=a5["duration_min"]))
+    _alert_times["alert_5"] = time.time()
+
+    _wait(1)
+    _reply(_msg_ids["alert_5"], "🤖 收到，已ACK并屏蔽报警30min，现在开始分析。")
+    _update_card(_msg_ids["alert_5"], _build_alert_card_acked(
+        a5["name"], a5["service"], a5["severity"], a5["summary"],
+        alert_id=a5["alert_id"], env="prod", rule_name=a5["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a5["tags"],
+        dashboard_url=a5["dashboard_url"], duration_min=a5["duration_min"]))
+
+    _wait(2, "Agent 内部检测到 30 秒内 5 条告警...")
+
+    # =============================================================
+    # ⚡ 风暴触发！创建 Problem P-2001 + 发风暴卡片（群级别）
+    # =============================================================
+    _pause("🌪️ 风暴触发！创建 P-2001 + 发送风暴 Problem 卡片")
+    storm_list = (
+        "- **AG-40001** NodeHighCPU (k8s-node-pool) · Critical\n"
+        "- **AG-40002** PodCrashLoopBackOff (checkoutservice) · Critical\n"
+        "- **AG-40003** ServiceHighErrorRate (adservice) · Warning\n"
+        "- **AG-40004** PodOOMKilled (cartservice) · Critical\n"
+        "- **AG-40005** ServiceHighLatency (productcatalogservice) · Warning"
+    )
+    _msg_ids["storm_card"] = _send_card(
+        _build_storm_problem_card("P-2001", 5, 4, 30, storm_list))
+    storm_mid = _msg_ids["storm_card"]
+
+    _wait(1)
+
+    # --- 中止所有独立分析 → 更新分析卡片为"已中止" ---
+    _pause("⏹️ 中止所有独立分析 → 更新分析卡片")
+
+    analysis_1_aborted = (
+        "1. ✅ 查询节点指标: CPU 98.7%, 内存 96.2%\n"
+        "2. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
+        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+    )
+    _update_card(_msg_ids["analysis_1"], _build_analysis_card_aborted(
+        "AG-40001", "NodeHighCPU 分析", analysis_1_aborted, "P-2001"))
+
+    analysis_2_aborted = (
+        "1. ✅ Pod 状态: CrashLoopBackOff, 重启 5 次\n"
+        "2. ✅ Pod 事件: Back-off restarting failed container\n"
+        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+    )
+    _update_card(_msg_ids["analysis_2"], _build_analysis_card_aborted(
+        "AG-40002", "PodCrashLoopBackOff 分析", analysis_2_aborted, "P-2001"))
+
+    analysis_3_aborted = (
+        "1. ✅ 错误率: 0.1% → 45%\n"
+        f"2. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+    )
+    _update_card(_msg_ids["analysis_3"], _build_analysis_card_aborted(
+        "AG-40003", "ServiceHighErrorRate 分析", analysis_3_aborted, "P-2001"))
+
+    print(f"         ✅ 3 张分析卡片已更新为[已中止]")
+
+    _wait(1)
+
+    # --- 回到每条告警下通知已归并 ---
+    _pause("🔗 回到每条告警下通知已归并至 P-2001")
+    for a in ALERTS:
+        _reply(_msg_ids[a["key"]],
+               f"🔗 已归并至 {_problem_link('P-2001')}（报警风暴），中止独立分析，由 {_problem_link('P-2001')} 统一处理。")
+    print(f"         ✅ 5 条告警已全部归并")
+
+    _wait(1)
+
+    # --- P-2001 话题内：静默所有报警规则 ---
+    _pause("🔇 P-2001 话题内：静默所有报警规则")
+    _reply(storm_mid, "🔇 已静默所有相关报警规则（2 小时），避免风暴期间持续报警干扰。")
+
+    _wait(2)
+
+    # ================================================================
+    # 🎬 ACT 2: 风暴 RCA + 止损（P-2001 话题内）(~30s base)
+    # ================================================================
+    print(f"\n  {'━' * 50}")
+    print(f"  🎬 第二幕：风暴 RCA + 止损（P-2001 话题内）")
+    print(f"  {'━' * 50}")
+
+    # --- P-2001 话题内：关联分析卡片 ---
+    _pause("🔍 P-2001 话题内：启动风暴模式 RCA 分析")
+    analysis_steps = (
+        "1. ✅ 共同特征: 5/5 告警均涉及 K8s 节点 `n128-052-031`\n"
+        "2. ✅ 节点指标: CPU 98.7%，内存 96.2%（均处于极限）\n"
+        "3. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
+        "4. ⏳ 确认因果链和影响范围..."
+    )
+    _msg_ids["analysis_storm"] = _reply_card_in_thread(
+        storm_mid,
+        _build_analysis_card_thinking("P-2001", "风暴关联分析", analysis_steps))
+
+    _wait(5, "Agent 风暴模式 RCA 分析中...")
+
+    # --- 更新为 RCA 完成 ---
+    _pause("🧠 风暴 RCA 完成")
+    analysis_steps_done = (
+        "1. ✅ 共同特征: 5/5 告警均涉及 K8s 节点 `n128-052-031`\n"
+        "2. ✅ 节点指标: CPU 98.7%，内存 96.2%（均处于极限）\n"
+        "3. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
+        "4. ✅ 因果链: 节点资源耗尽 → kubelet 驱逐 Pod → "
+        "4 个服务 CrashLoop/OOMKill/性能劣化\n"
+        "5. ✅ 根因: 节点上残留大数据任务进程，持续消耗 CPU 和内存"
+    )
+    conclusion_md = (
+        "**根因定位**：K8s 节点 `n128-052-031` 资源耗尽（CPU 98.7% / 内存 96.2%），"
+        "疑似有残留进程持续消耗资源。"
+        "触发 kubelet eviction，导致该节点上所有 Pod 被驱逐或 OOMKill。\n\n"
+        "**影响范围**：checkoutservice / adservice / cartservice / "
+        "productcatalogservice\n\n"
+        "**因果链**：\n"
+        "节点资源耗尽 → kubelet eviction →\n"
+        "  - AG-40001 NodeHighCPU\n"
+        "  - AG-40002 PodCrashLoopBackOff (checkoutservice)\n"
+        "  - AG-40003 ServiceHighErrorRate (adservice)\n"
+        "  - AG-40004 PodOOMKilled (cartservice)\n"
+        "  - AG-40005 ServiceHighLatency (productcatalogservice)\n\n"
+        "**建议止损**：清理节点上的异常进程，释放资源，等待 Pod 自动恢复。"
+    )
+    _update_card(_msg_ids["analysis_storm"], _build_analysis_card_done(
+        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
+        conclusion_md, analysis_steps_done,
+        "⭐⭐⭐⭐ (85%)", color="orange"))
+
+    _wait(2)
+
+    # --- @值班人建议止损方案 ---
+    _pause("🤖 @值班人：建议止损方案")
+    _reply_at_oncall(
+        storm_mid,
+        "风暴 RCA 完成。根因为节点 n128-052-031 资源耗尽，"
+        "疑似残留大数据任务进程。建议登录节点清理异常进程，释放资源后 Pod 应自动恢复。")
+
+    _wait(4, "等待值班人响应...")
+
+    # --- 值班人确认并去处理 ---
+    _pause("👤 值班人确认，去处理节点")
+    _human_reply_in_thread(
+        storm_mid,
+        f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
+        "确认了，这个节点昨晚有个大数据任务没清理干净。我去节点上 kill 掉那个进程。")
+
+    _wait(2)
+    _reply(storm_mid, "🤖 收到，等待处理完成后我来验证恢复情况。")
+
+    _wait(5, "值班人处理节点中...")
+
+    # --- 值班人通知处理完成 ---
+    _pause("👤 值班人通知处理完成")
+    _human_reply_in_thread(
+        storm_mid,
+        f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
+        "搞定了，进程已经 kill 掉，节点 CPU 已经在下降。帮我取消静默看看恢复情况。")
+
+    _wait(2)
+
+    # ================================================================
+    # 🎬 ACT 3: 取消静默 + 恢复验证 + 纠偏（P-2001 话题内）(~50s base)
+    # ================================================================
+    print(f"\n  {'━' * 50}")
+    print(f"  🎬 第三幕：取消静默 + 恢复验证 + 纠偏")
+    print(f"  {'━' * 50}")
+
+    # --- 取消静默 ---
+    _pause("🔔 Agent 取消静默")
+    _reply(storm_mid,
+           "🤖 收到，正在取消静默...\n\n"
+           "🔔 已取消 5 条告警的静默，恢复正常报警推送。开始恢复验证。")
+
+    _wait(3, "等待指标回落...")
+
+    # --- 恢复验证第 1 轮：4/5 恢复，1 条未恢复 ---
+    _pause("📉 恢复验证第 1 轮 → 4/5 恢复，1 条未恢复")
+    round1_time = time.strftime("%H:%M:%S")
+    verify_round1 = (
+        f"**第 1 轮** ({round1_time})  ·  止损后 ~2min\n\n"
+        "- ✅ **AG-40001** NodeHighCPU · CPU 98.7% → 32.1%\n"
+        "- ✅ **AG-40002** PodCrashLoopBackOff · 重启 5 次 → Running\n"
+        "- ✅ **AG-40003** ServiceHighErrorRate · 错误率 45% → 0.2%\n"
+        "- ✅ **AG-40004** PodOOMKilled · OOMKilled → Running\n"
+        "- ❌ **AG-40005** ServiceHighLatency · P99 4200ms → **3800ms（未恢复）**\n\n"
+        "⚠️ 4/5 告警已恢复，**ServiceHighLatency (AG-40005) 未恢复**，"
+        "P99 延迟仍高达 3800ms。"
+    )
+    _msg_ids["recovery_card"] = _reply_card_in_thread(
+        storm_mid,
+        _build_recovery_card("P-2001", "恢复验证", verify_round1, "failed"))
+
+    _wait(2)
+
+    # --- 纠偏：Agent 发现有告警未恢复，启动独立分析 ---
+    _pause("⚡ 纠偏：AG-40005 未恢复，启动独立分析")
+    _reply(storm_mid,
+           "⚠️ AG-40005 (ServiceHighLatency) 在节点资源恢复后仍未恢复，"
+           "可能存在独立根因。启动针对性分析...")
+
+    _wait(2)
+
+    correction_steps = (
+        "1. ✅ 排除节点资源问题（CPU 32.1%，内存 50%，已正常）\n"
+        "2. ✅ productcatalogservice Pod Running，无 OOM/CrashLoop\n"
+        "3. ✅ Tempo 链路: productcatalogservice → Redis 调用 P99=3500ms\n"
+        "4. ✅ Redis 指标: 内存使用率 95%，大量 eviction\n"
+        "5. ✅ 根因: 风暴期间大量请求重试导致 Redis 缓存被打满"
+    )
+    _msg_ids["correction_analysis"] = _reply_card_in_thread(
+        storm_mid,
+        _build_analysis_card_thinking(
+            "P-2001 (纠偏)", "AG-40005 独立根因分析", correction_steps))
+
+    _wait(4, "Agent 分析 AG-40005...")
+
+    correction_conclusion = (
+        "**独立根因**：productcatalogservice 的延迟并非节点资源问题，"
+        "而是风暴期间大量重试请求打满了 Redis 缓存（内存 95%），"
+        "导致频繁 eviction 和缓存穿透。\n\n"
+        f"⚠️ **该根因与 {_problem_link('P-2001')}（节点资源耗尽）无关，需要创建独立问题。**"
+    )
+    correction_steps_done = (
+        "1. ✅ 排除节点资源问题（CPU 32.1%，内存 50%，已正常）\n"
+        "2. ✅ productcatalogservice Pod Running，无 OOM/CrashLoop\n"
+        "3. ✅ Tempo: productcatalogservice → Redis P99=3500ms\n"
+        "4. ✅ Redis 内存使用率 95%，大量 key eviction\n"
+        "5. ✅ 根因确认: 风暴期间重试风暴打满 Redis 缓存"
+    )
+    _update_card(_msg_ids["correction_analysis"], _build_analysis_card_done(
+        "P-2001 (纠偏)", "AG-40005 独立根因: Redis 缓存打满",
+        correction_conclusion, correction_steps_done,
+        "⭐⭐⭐⭐ (90%)", color="orange"))
+
+    _wait(2)
+
+    # --- 从 P-2001 剔除 AG-40005 ---
+    _pause("🔀 将 AG-40005 从 P-2001 剔除")
+    _reply(storm_mid,
+           f"🔀 AG-40005 (ServiceHighLatency) 根因与 {_problem_link('P-2001')} 不同，"
+           f"已从 {_problem_link('P-2001')} 剔除，将在原告警话题下重新分析处理。")
+
+    _wait(1)
+
+    # --- P-2001 第2轮验证（仅剩4条）→ 全部通过 → P-2001 消除 ---
+    _pause("✅ P-2001 第2轮验证（4条）→ 全部通过")
+    round2_time = time.strftime("%H:%M:%S")
+    verify_p2001_final = (
+        f"**第 1 轮** ({round1_time})  ·  止损后 ~2min\n\n"
+        "- ✅ **AG-40001** NodeHighCPU · CPU 98.7% → 32.1%\n"
+        "- ✅ **AG-40002** PodCrashLoopBackOff · 重启 5 次 → Running\n"
+        "- ✅ **AG-40003** ServiceHighErrorRate · 错误率 45% → 0.2%\n"
+        "- ✅ **AG-40004** PodOOMKilled · OOMKilled → Running\n"
+        "- ❌ **AG-40005** ServiceHighLatency · P99 4200ms → 3800ms（未恢复）\n\n"
+        "---\n\n"
+        f"**第 2 轮** ({round2_time})  ·  AG-40005 已剔除，独立处理\n\n"
+        "- ✅ **AG-40001** NodeHighCPU · CPU 98.7% → 30.5%\n"
+        "- ✅ **AG-40002** PodCrashLoopBackOff · 重启 5 次 → Running\n"
+        "- ✅ **AG-40003** ServiceHighErrorRate · 错误率 45% → 0.1%\n"
+        "- ✅ **AG-40004** PodOOMKilled · OOMKilled → Running\n"
+        f"- 🔀 AG-40005 已剔除，由 {_problem_link('P-2002')} 独立处理\n\n"
+        f"{_problem_link('P-2001')} 关联的 4/4 告警全部恢复 ✅"
+    )
+    _update_card(_msg_ids["recovery_card"],
+                 _build_recovery_card("P-2001", "恢复验证",
+                                      verify_p2001_final, "passed"))
+
+    _wait(1)
+
+    # 回到前4条告警下标记已恢复
+    for a in ALERTS[:4]:
+        _update_card(_msg_ids[a["key"]], _build_alert_card_resolved(
+            a["name"], a["service"], a["severity"], a["summary"],
+            alert_id=a["alert_id"],
+            env="prod",
+            rule_name=a["name"],
+            oncall_users=["赵欣欣"],
+            tags=a.get("tags"),
+            dashboard_url=a.get("dashboard_url", ""),
+            resolve_note=f"{_problem_link('P-2001')} 问题已消除，告警已恢复",
+            alert_time=_alert_times.get(a["key"])))
+        _reply(_msg_ids[a["key"]], f"✅ 已恢复，告警已消除。{_problem_link('P-2001')} 问题已解决。")
+    print(f"         ✅ 前 4 条告警卡片已更新为已恢复")
+
+    _wait(1)
+
+    # P-2001 最终状态卡片
+    _pause("🎉 P-2001 消除")
+    p2001_final_body = (
+        "- ✅ **AG-40001** NodeHighCPU (k8s-node-pool)\n"
+        "- ✅ **AG-40002** PodCrashLoopBackOff (checkoutservice)\n"
+        "- ✅ **AG-40003** ServiceHighErrorRate (adservice)\n"
+        "- ✅ **AG-40004** PodOOMKilled (cartservice)\n"
+        f"- 🔀 AG-40005 剔除，由 {_problem_link('P-2002')} 独立处理\n\n"
+        "根因：节点 n128-052-031 残留大数据任务进程耗尽资源\n"
+        "止损：清理进程 + 取消静默\n"
+        "处理过程：风暴检测 → 归并 + 静默 → RCA → 止损 → 恢复验证 → 纠偏剔除"
+    )
+    storm_resolved_list = (
+        "- ✅ **AG-40001** NodeHighCPU (k8s-node-pool)\n"
+        "- ✅ **AG-40002** PodCrashLoopBackOff (checkoutservice)\n"
+        "- ✅ **AG-40003** ServiceHighErrorRate (adservice)\n"
+        "- ✅ **AG-40004** PodOOMKilled (cartservice)\n"
+        f"- 🔀 AG-40005 剔除，由 {_problem_link('P-2002')} 独立处理"
+    )
+    _update_card(storm_mid, _build_storm_problem_card_resolved(
+        "P-2001", 5, 4, 30, storm_resolved_list,
+        resolve_note=f"节点 n128-052-031 残留进程已清理，4/5 告警已恢复，AG-40005 由 {_problem_link('P-2002')} 独立处理"))
+
+    _reply_card_in_thread(storm_mid, _build_status_card(
+        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
+        "resolved", p2001_final_body))
+
+    _wait(2)
+
+    # ================================================================
+    # P-2002：在 AG-40005 原始告警话题下重新分析处理
+    # ================================================================
+    print(f"\n  {'━' * 50}")
+    print(f"  🎬 P-2002：AG-40005 话题下重新分析处理")
+    print(f"  {'━' * 50}")
+
+    alert5_mid = _msg_ids["alert_5"]
+
+    # --- AG-40005 话题下：通知剔除 + 重新分析 ---
+    _pause("🔀 AG-40005 话题下：通知剔除，创建 P-2002，重新分析")
+    _reply(alert5_mid,
+           f"🔀 已从 {_problem_link('P-2001')} 剔除（根因不同）。\n"
+           f"📝 已创建独立问题 {_problem_link('P-2002')}，现在重新分析。")
+
+    _wait(2)
+
+    # 重新分析卡片（在 AG-40005 话题内）
+    p2002_analysis_steps = (
+        "1. ✅ 排除节点资源问题（CPU 32.1%，已正常）\n"
+        "2. ✅ productcatalogservice Pod Running，无异常\n"
+        "3. ✅ Tempo: productcatalogservice → Redis P99=3500ms\n"
+        "4. ✅ Redis 内存使用率 95%，大量 key eviction\n"
+        "5. ✅ 根因确认: 风暴期间重试请求打满 Redis 缓存"
+    )
+    _msg_ids["p2002_analysis"] = _reply_card_in_thread(
+        alert5_mid,
+        _build_analysis_card_done(
+            "P-2002", "Redis 缓存打满导致 productcatalogservice 延迟",
+            "**根因定位**：风暴期间大量重试请求打满 Redis 缓存（内存 95%），"
+            "导致频繁 eviction 和缓存穿透，productcatalogservice P99 延迟 3800ms。\n\n"
+            "**建议止损**：清理 Redis 缓存或重启 productcatalogservice。",
+            p2002_analysis_steps,
+            "⭐⭐⭐⭐ (90%)", color="orange"))
+
+    _wait(2)
+
+    # --- @值班人 ---
+    _pause("🤖 AG-40005 话题内：@值班人建议止损")
+    _reply_at_oncall(alert5_mid,
+                     f"{_problem_link('P-2002')} 根因为 Redis 缓存打满。"
+                     "建议清理 Redis 缓存或重启 productcatalogservice。")
+
+    _wait(3, "等待值班人处理...")
+
+    # --- 值班人在 AG-40005 话题内处理 ---
+    _pause("👤 值班人处理 Redis")
+    _human_reply_in_thread(
+        alert5_mid,
+        f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
+        "已执行 Redis FLUSHDB 清理缓存，productcatalogservice 正在重建缓存。")
+
+    _wait(2)
+    _reply(alert5_mid, "🤖 收到，等待缓存重建后进行恢复验证。")
+
+    _wait(5, "等待缓存重建...")
+
+    # --- P-2002 恢复验证 → 通过（在 AG-40005 话题内） ---
+    _pause("✅ P-2002 恢复验证 → 通过")
+    p2002_verify_time = time.strftime("%H:%M:%S")
+    p2002_verify = (
+        f"**验证时间** ({p2002_verify_time})  ·  Redis 缓存清理后 ~2min\n\n"
+        "- ✅ **AG-40005** ServiceHighLatency · P99 4200ms → **85ms（已恢复）**\n"
+        "- ✅ Redis 内存使用率 95% → 42%\n\n"
+        "告警已恢复 ✅"
+    )
+    _msg_ids["p2002_recovery"] = _reply_card_in_thread(
+        alert5_mid,
+        _build_recovery_card("P-2002", "恢复验证", p2002_verify, "passed"))
+
+    _wait(1)
+
+    # P-2002 最终状态（在 AG-40005 话题内）
+    _pause("🎉 P-2002 消除")
+    total_minutes = max(1, int((time.time() - _start_time) / 60))
+    p2002_final_body = (
+        "- ✅ **AG-40005** ServiceHighLatency (productcatalogservice)\n\n"
+        "根因：风暴期间重试请求打满 Redis 缓存\n"
+        "止损：清理 Redis 缓存\n"
+        f"总处理耗时：约 {total_minutes} 分钟"
+    )
+    _update_card(_msg_ids["alert_5"], _build_alert_card_resolved(
         "ServiceHighLatency", "productcatalogservice", "warning",
         "商品服务 P99 延迟从 80ms 升至 4200ms",
         alert_id="AG-40005",
         env="prod",
         rule_name="ServiceHighLatency",
         oncall_users=["赵欣欣"],
-        tags={"_env": "prod", "_pod_name": "productcatalog-8c6d7e5f3-v4w1x",
-              "host": "n128-052-031", "node": "n128-052-031"},
-        dashboard_url="https://grafana.example.com/d/productcatalog-overview",
-        duration_min=0))
+        tags={"_env": "prod", "host": "n128-055-012"},
+        resolve_note=f"Redis 缓存已清理，P99 延迟恢复至 85ms，{_problem_link('P-2002')} 已消除",
+        alert_time=_alert_times.get("alert_5")))
 
-    _wait(1)
-
-    # --- ⚠️ Agent 检测到风暴 ---
-    _pause("⚠️ Agent 检测到报警风暴！发送风暴检测卡片")
-    storm_table = (
-        "| 告警 | 服务 | 级别 | Alert Group |\n"
-        "|------|------|------|-------------|\n"
-        "| NodeHighCPU | k8s-node-pool | critical | AG-40001 |\n"
-        "| PodCrashLoopBackOff | checkoutservice | critical | AG-40002 |\n"
-        "| ServiceHighErrorRate | adservice | warning | AG-40003 |\n"
-        "| PodOOMKilled | cartservice | critical | AG-40004 |\n"
-        "| ServiceHighLatency | productcatalogservice | warning | AG-40005 |"
-    )
-    _msg_ids["storm_card"] = _reply_card_in_thread(
-        _msg_ids["alert_1"],
-        _build_storm_summary_card(5, 4, 30, storm_table))
-
-    _wait(1)
-    _reply_at_oncall(_msg_ids["alert_1"],
-                     "检测到报警风暴（5条/30秒），已切换为关联分析模式。")
+    _reply_card_in_thread(alert5_mid, _build_status_card(
+        "P-2002", "Redis 缓存打满导致 productcatalogservice 延迟",
+        "resolved", p2002_final_body))
 
     _wait(2)
 
-    # ================================================================
-    # 🎬 ACT 2: 关联分析 + 风暴归因 (~25s base)
-    # ================================================================
-    print(f"\n  {'━' * 50}")
-    print(f"  🎬 第二幕：关联分析 + 风暴归因")
-    print(f"  {'━' * 50}")
-
-    # --- 发送分析中卡片 ---
-    _pause("🔍 Agent 开始风暴关联分析")
-    analysis_steps = (
-        "1. ✅ 5/5 告警均发生在同一 K8s 节点 n128-052-031\n"
-        "2. ✅ 节点 CPU 98.7%，内存 96.2%\n"
-        "3. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
-        "4. ⏳ 确认节点故障范围..."
-    )
-    _msg_ids["analysis_storm"] = _reply_card_in_thread(
-        _msg_ids["alert_1"],
-        _build_analysis_card_thinking(
-            "风暴关联分析", "5 条告警关联性分析", analysis_steps))
-
-    _wait(5, "Agent 关联分析中...")
-
-    # --- 更新为分析完成 ---
-    _pause("🧠 关联分析完成，更新卡片")
-    analysis_steps_done = (
-        "1. ✅ 5/5 告警均发生在同一 K8s 节点 n128-052-031\n"
-        "2. ✅ 节点 CPU 98.7%，内存 96.2%\n"
-        "3. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
-        "4. ✅ 节点上 4 个服务 Pod 均受影响（驱逐/OOMKill/性能劣化）"
-    )
-    conclusion_md = (
-        "**根因定位**：K8s 节点 n128-052-031 内存和 CPU 资源耗尽，"
-        "触发 kubelet eviction，导致该节点上所有 Pod 被驱逐或 OOMKill。\n\n"
-        "**影响范围**：checkoutservice / adservice / cartservice / productcatalogservice\n\n"
-        "📝 已创建问题 **P-2001**\n"
-        "🔕 **建议：一键静默以下 5 条告警 2 小时**，专心排查节点故障。"
-    )
-    _update_card(_msg_ids["analysis_storm"], _build_analysis_card_done(
-        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
-        conclusion_md,
-        analysis_steps_done,
-        "⭐⭐⭐⭐ (85%)",
-        color="orange"))
-
-    _wait(1)
-    _reply_at_oncall(_msg_ids["alert_1"],
-                     "风暴归因完成，建议一键静默 5 条告警 2 小时，详见上方卡片。")
-
-    _wait(3, "等待值班人确认...")
-
-    # --- 值班人确认 ---
-    _pause("👤 值班人确认一键静默")
-    _human_reply_in_thread(
-        _msg_ids["alert_1"],
-        f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
-        "分析得对，这个节点昨晚有个大数据任务没清理干净，吃满了资源。"
-        "一键静默吧，我去处理节点。")
-
-    _wait(2)
-
-    _pause("🤖 Agent 开始批量静默")
-    _reply(_msg_ids["alert_1"], "🤖 收到，正在批量静默 5 条告警（2 小时）...")
-
-    _wait(2)
-
-    # --- 批量静默完成卡片 ---
-    _pause("✅ 批量静默完成，发送执行结果卡片")
-    silence_expire = time.strftime("%H:%M", time.localtime(time.time() + 7200))
-    silence_result_md = (
-        "| 告警 | Alert Group | 操作 |\n"
-        "|------|------------|------|\n"
-        "| NodeHighCPU | AG-40001 | ✅ 已静默 2h |\n"
-        "| PodCrashLoopBackOff | AG-40002 | ✅ 已静默 2h |\n"
-        "| ServiceHighErrorRate | AG-40003 | ✅ 已静默 2h |\n"
-        "| PodOOMKilled | AG-40004 | ✅ 已静默 2h |\n"
-        "| ServiceHighLatency | AG-40005 | ✅ 已静默 2h |\n\n"
-        f"静默到期时间：{silence_expire}\n"
-        "届时将自动恢复报警推送。"
-    )
-    _msg_ids["silence_card"] = _reply_card_in_thread(
-        _msg_ids["alert_1"],
-        {
-            "config": {"update_multi": True, "wide_screen_mode": True},
-            "header": {
-                "template": "green",
-                "title": {"tag": "plain_text", "content": "✅ 批量静默完成"},
-            },
-            "elements": [
-                {"tag": "markdown", "content": silence_result_md},
-            ],
-        })
-
-    _wait(3)
-
-    # ================================================================
-    # 🎬 ACT 3: 故障恢复 + 取消静默 (~30s base)
-    # ================================================================
-    print(f"\n  {'━' * 50}")
-    print(f"  🎬 第三幕：故障恢复 + 取消静默")
-    print(f"  {'━' * 50}")
-
-    _wait(5, "值班人处理节点中...")
-
-    # --- 值班人请求取消静默 ---
-    _pause("👤 值班人请求提前取消静默")
-    _human_reply_in_thread(
-        _msg_ids["alert_1"],
-        f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
-        "节点上的大数据任务已经清理了，Pod 在陆续恢复中。"
-        "帮我提前取消静默，我看下恢复情况。")
-
-    _wait(2)
-
-    _pause("🤖 Agent 取消静默")
-    _reply(_msg_ids["alert_1"], "🤖 收到，正在取消所有告警的静默...")
-
-    _wait(2)
-
-    # --- 静默已取消卡片 ---
-    _pause("🔔 静默已取消")
-    _msg_ids["unsilence_card"] = _reply_card_in_thread(
-        _msg_ids["alert_1"],
-        {
-            "config": {"update_multi": True, "wide_screen_mode": True},
-            "header": {
-                "template": "blue",
-                "title": {"tag": "plain_text", "content": "🔔 静默已取消"},
-            },
-            "elements": [
-                {"tag": "markdown",
-                 "content": "已取消 5 条告警的静默，恢复正常报警推送。\n\n开始恢复验证..."},
-            ],
-        })
-
-    _wait(3, "开始恢复验证...")
-
-    # --- 恢复验证第 1 轮 ---
-    _pause("📉 恢复验证第 1 轮")
-    round1_time = time.strftime("%H:%M:%S")
-    verify_round1 = (
-        f"**第 1 轮** ({round1_time})  ·  取消静默后 ~30s\n\n"
-        "| 指标 | 故障时 | 当前 | 状态 |\n"
-        "|------|--------|------|------|\n"
-        "| 节点 CPU | 98.7% | 35.2% | ✅ |\n"
-        "| 节点内存 | 96.2% | 52.1% | ✅ |\n"
-        "| Pod 运行数 | 2/6 | 6/6 | ✅ |\n"
-        "| checkout P99 | >5000ms | 180ms | ✅ |\n"
-        "| adservice 错误率 | 45% | 0.2% | ✅ |"
-    )
-    _msg_ids["recovery_card"] = _reply_card_in_thread(
-        _msg_ids["alert_1"],
-        _build_recovery_card("P-2001", "恢复验证", verify_round1, "verifying"))
-
-    _wait(5, "等待指标进一步稳定...")
-
-    # --- 恢复验证第 2 轮 → 全部通过 ---
-    _pause("✅ 恢复验证第 2 轮 → 全部通过")
-    round2_time = time.strftime("%H:%M:%S")
-    verify_rounds_all = (
-        f"**第 1 轮** ({round1_time})  ·  取消静默后 ~30s\n\n"
-        "| 指标 | 故障时 | 当前 | 状态 |\n"
-        "|------|--------|------|------|\n"
-        "| 节点 CPU | 98.7% | 35.2% | ✅ |\n"
-        "| 节点内存 | 96.2% | 52.1% | ✅ |\n"
-        "| Pod 运行数 | 2/6 | 6/6 | ✅ |\n"
-        "| checkout P99 | >5000ms | 180ms | ✅ |\n"
-        "| adservice 错误率 | 45% | 0.2% | ✅ |\n\n"
-        "---\n\n"
-        f"**第 2 轮** ({round2_time})  ·  取消静默后 ~2min\n\n"
-        "| 指标 | 故障时 | 当前 | 状态 |\n"
-        "|------|--------|------|------|\n"
-        "| 节点 CPU | 98.7% | 33.8% | ✅ |\n"
-        "| 节点内存 | 96.2% | 50.5% | ✅ |\n"
-        "| Pod 运行数 | 2/6 | 6/6 | ✅ |\n"
-        "| checkout P99 | >5000ms | 150ms | ✅ |\n"
-        "| adservice 错误率 | 45% | 0.1% | ✅ |\n\n"
-        "全部指标已恢复至正常水平 ✅"
-    )
-    _update_card(_msg_ids["recovery_card"],
-                 _build_recovery_card("P-2001", "恢复验证",
-                                      verify_rounds_all, "passed"))
-
-    _wait(2)
-
-    # --- 最终状态卡片 ---
-    _pause("🎉 发送最终状态卡片：P-2001 已消除")
-    total_minutes = int((time.time() - _start_time) / 60)
-    final_body = (
-        "告警 A~E: 全部已恢复 ✅\n"
-        "节点 n128-052-031 资源已恢复正常\n\n"
-        f"处理耗时：约 {total_minutes} 分钟\n"
-        "处理方式：报警风暴检测 → 关联分析 → 批量静默 → 人工修复 → 恢复验证"
-    )
-    _reply_card_in_thread(_msg_ids["alert_1"], _build_status_card(
-        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
-        "resolved", final_body))
-
-    _wait(1)
-    _reply(_msg_ids["alert_1"],
-           "🎉 P-2001 已消除，5 条告警全部恢复，节点资源正常。")
-
-    _wait(2)
-
-    # --- 值班人点赞 ---
+    # --- 值班人在 AG-40005 话题内最终回复 ---
     _pause("👤 值班人回复")
-    _human_reply_in_thread(_msg_ids["alert_1"],
-                           f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n👍")
+    _human_reply_in_thread(
+        alert5_mid,
+        f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
+        "👍 拆分问题很及时。我给大数据任务加资源限制，"
+        "Redis 也加个内存上限告警，避免下次再被打满。")
 
     # ============================================================
     total = time.time() - _start_time
@@ -768,7 +1355,8 @@ def main():
     print(f"  飞书群: {feishu_api._resolve_chat_id(None)}")
     print(f"  值班人: {_ONCALL_PERSON_NAME}")
     print(f"  时间倍率: {_SCALE:.2f}x")
-    print(f"  场景: 报警风暴→关联分析→批量静默→恢复验证")
+    print(f"  场景: 告警并行分析→风暴触发→归并+静默→RCA→止损→"
+          "取消静默→恢复验证→纠偏")
     print(f"{'=' * 60}\n")
 
     try:
