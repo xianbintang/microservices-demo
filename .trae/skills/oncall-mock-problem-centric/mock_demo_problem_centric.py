@@ -38,6 +38,9 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
+import urllib.request
+import urllib.error
 
 # ============================================================
 # 路径初始化
@@ -102,6 +105,37 @@ def _parse_args():
 
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
+PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+_default_api_base = "http://localhost:9095"
+if PROBLEM_BASE_URL:
+    import urllib.parse as _urlparse
+    _parsed = _urlparse.urlparse(PROBLEM_BASE_URL)
+    _default_api_base = f"{_parsed.scheme}://{_parsed.netloc}"
+PROBLEM_API_BASE = os.environ.get("PROBLEM_API_BASE", _default_api_base)
+
+
+def _problem_link(pid: str) -> str:
+    if PROBLEM_BASE_URL:
+        raw_url = f"{PROBLEM_BASE_URL}#{pid}"
+        applink = f"https://applink.feishu.cn/client/web_url/open?mode=sidebar-semi&url={quote(raw_url, safe='')}"
+        return f"[{pid}]({applink})"
+    return f"**{pid}**"
+
+
+def _api_call(method: str, path: str, body: dict = None) -> dict:
+    url = f"{PROBLEM_API_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result
+    except Exception as e:
+        print(f"         ⚠️ API 调用失败 {method} {path}: {e}")
+        return {}
+
+
 _msg_ids = {}
 _start_time = 0.0
 _oncall_open_id = None
@@ -521,8 +555,8 @@ def _build_recovery_card(problem_id: str, rounds_md: str,
     """构建恢复验证卡片。"""
     status_map = {
         "verifying": ("orange", "📉 恢复验证中"),
-        "passed":    ("green",  "✅ 全部恢复"),
-        "partial":   ("orange", "⚠️ 部分恢复"),
+        "passed":    ("green",  "✅ 恢复验证通过"),
+        "failed":    ("red",    "❌ 恢复验证不通过"),
     }
     color, label = status_map.get(status, ("orange", "📉 恢复验证中"))
     return {
@@ -550,6 +584,13 @@ def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
 
+    print("  🔄 重置 Problem 数据...")
+    _api_call("POST", "/api/problems/reset")
+    _api_call("POST", "/api/problems/reinit")
+    print("  ✅ Problem 数据已重置（初始 Mock 数据已导入）")
+
+    pid_1 = ""  # 对应原来的 P-3001
+
     # 尝试查找值班人 open_id
     try:
         member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
@@ -576,17 +617,33 @@ def run_demo():
     # ================================================================
     _pause("🧠 Act 1: Agent 后台收到 4 条告警，开始自动聚合")
     print("         📡 后台告警流（群里不会看到这些）：")
-    print("           [15:32:01] AG-30001 ServiceHighErrorRate / checkoutservice / Critical")
-    print("           [15:32:15] AG-30002 ServiceSuccessRateDrop / checkoutservice / Warning")
-    print("           [15:32:28] AG-30003 PodHighCPU / adservice / Warning")
-    print("           [15:32:42] AG-30004 ServiceHighLatency / paymentservice / Warning")
+    print("           [15:32:01] AG-50001 ServiceHighErrorRate / checkoutservice / Critical")
+    print("           [15:32:15] AG-50002 ServiceSuccessRateDrop / checkoutservice / Warning")
+    print("           [15:32:28] AG-50003 PodHighCPU / adservice / Warning")
+    print("           [15:32:42] AG-50004 ServiceHighLatency / paymentservice / Warning")
 
     _wait(3, "Agent 后台自动聚合 + 初判...")
+
+    resp = _api_call("POST", "/api/problems", {
+        "title": "交易链路大面积超时",
+        "root_cause": "adservice 近期变更导致处理耗时飙升（初判）",
+        "alert_group_id": "AG-50001",
+        "message_id": "",
+    })
+    pid_1 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_1}")
+
+    for ag_id, desc in [
+        ("AG-50002", "checkoutservice 的 ServiceSuccessRateDrop 告警 (AG-50002) 归并至本问题"),
+        ("AG-50003", "adservice 的 PodHighCPU 告警 (AG-50003) 归并至本问题"),
+        ("AG-50004", "paymentservice 的 ServiceHighLatency 告警 (AG-50004) 归并至本问题"),
+    ]:
+        _api_call("POST", f"/api/problems/{pid_1}/merge", {"alert_group_id": ag_id, "description": desc})
 
     # — 群里只发一张 Problem 卡片 —
     _pause("📨 群里发送 Problem 卡片（唯一的一张群消息）")
     _msg_ids["problem"] = _send_card(_build_problem_card(
-        "P-3001",
+        pid_1,
         "交易链路大面积超时",
         "critical",
         alert_count=4,
@@ -612,7 +669,7 @@ def run_demo():
     )
     _msg_ids["rca"] = _reply_card_in_thread(
         _msg_ids["problem"],
-        _build_rca_thinking_card("P-3001", "交易链路大面积超时", rca_steps_v1))
+        _build_rca_thinking_card(pid_1, "交易链路大面积超时", rca_steps_v1))
 
     _wait(6, "Agent 深入分析：查询 Tempo + Loki + 变更记录...")
 
@@ -637,9 +694,17 @@ def run_demo():
         "**变更关联**：CHG-2026-0401-003（配置变更，非代码发布）"
     )
     _update_card(_msg_ids["rca"], _build_rca_done_card(
-        "P-3001", "adservice 配置变更引入异常促销规则",
+        pid_1, "adservice 配置变更引入异常促销规则",
         rca_conclusion, rca_steps_done,
         "⭐⭐⭐⭐⭐ (96%)", color="green"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/root_cause", {
+        "root_cause": "adservice 配置变更（CHG-2026-0401-003）引入异常促销规则，处理耗时 50ms→4800ms"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "rca_done",
+        "description": "RCA 完成：adservice 配置变更 CHG-2026-0401-003 引入异常促销规则，级联影响 checkout/payment 服务"
+    })
 
     _wait(3)
 
@@ -656,17 +721,28 @@ def run_demo():
     _msg_ids["approval"] = _reply_card_in_thread(
         _msg_ids["problem"],
         _build_approval_card(
-            "P-3001",
+            pid_1,
             "adservice 配置变更导致交易链路超时",
             "adservice 配置变更（CHG-2026-0401-003）引入异常促销规则",
             action_plan,
             risk_note="回滚配置不影响其他服务，删除 Pod 由 K8s 自动重建（预计 30s）"))
 
+    _api_call("POST", f"/api/problems/{pid_1}/actions", {
+        "description": "回滚 adservice 配置 + 删除异常 Pod 触发重建"
+    })
+    _action_resp = _api_call("GET", f"/api/problems/{pid_1}")
+    _action_id_1 = ""
+    if _action_resp:
+        for _act in _action_resp.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_1 = _act["id"]
+                break
+
     _wait(1)
 
     # — 话题内@值班人加急 —
     _reply_at_oncall(_msg_ids["problem"],
-                     "⚠️ P-3001 止损方案已生成，请审批。"
+                     f"⚠️ {pid_1} 止损方案已生成，请审批。"
                      "当前交易成功率 82.3%，建议尽快处理。")
 
     _wait(5, "等待值班人审批...")
@@ -676,10 +752,13 @@ def run_demo():
 
     _human_reply_in_thread(_msg_ids["problem"], "👤 已确认，执行吧。注意观察回滚后的指标。")
 
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/approve", {"operator": _ONCALL_PERSON_NAME})
+
     _wait(1)
 
     _update_card(_msg_ids["approval"], _build_approval_result_card(
-        "P-3001",
+        pid_1,
         "adservice 配置变更导致交易链路超时",
         "adservice 配置变更（CHG-2026-0401-003）引入异常促销规则",
         action_plan,
@@ -696,17 +775,21 @@ def run_demo():
     )
     _msg_ids["exec"] = _reply_card_in_thread(
         _msg_ids["problem"],
-        _build_execution_card("P-3001", "回滚配置 + 重建 Pod", exec_steps_v1, "running"))
+        _build_execution_card(pid_1, "回滚配置 + 重建 Pod", exec_steps_v1, "running"))
 
     _wait(4, "执行配置回滚...")
 
     # — 新告警到达，归并并更新主卡片 —
-    _pause("🚨 新告警到达（AG-30005），Agent 自动归并，更新 Problem 主卡片")
+    _pause("🚨 新告警到达（AG-50005），Agent 自动归并，更新 Problem 主卡片")
+    _api_call("POST", f"/api/problems/{pid_1}/merge", {
+        "alert_group_id": "AG-50005",
+        "description": "adservice 的 PodRestartCount 告警 (AG-50005) 在执行止损期间触发，归并至本问题"
+    })
     alerts_data.append(
         {"name": "PodRestartCount", "service": "adservice",
          "severity": "Warning", "time": time.strftime("%H:%M:%S")})
     _update_card(_msg_ids["problem"], _build_problem_card(
-        "P-3001",
+        pid_1,
         "交易链路大面积超时",
         "critical",
         alert_count=5,
@@ -733,8 +816,18 @@ def run_demo():
         "⏳ 进入 **恢复验证** 阶段..."
     )
     _update_card(_msg_ids["exec"],
-                 _build_execution_card("P-3001", "回滚配置 + 重建 Pod",
+                 _build_execution_card(pid_1, "回滚配置 + 重建 Pod",
                                        exec_steps_done, "done"))
+
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/complete", {
+            "result": "配置回滚完成，异常 Pod 已删除并重建，adservice /ads 响应从 4800ms 恢复至 45ms"
+        })
+    _api_call("POST", f"/api/problems/{pid_1}/status", {"status": "recovering"})
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "execution_done",
+        "description": "止损执行完成：配置回滚 + Pod 重建，adservice 响应从 4800ms 恢复至 45ms"
+    })
 
     _wait(2)
 
@@ -757,7 +850,12 @@ def run_demo():
         "指标全面好转，继续观察..."
     )
     _msg_ids["recovery"] = _reply_card_in_thread(
-        _msg_ids["problem"], _build_recovery_card("P-3001", round1, "verifying"))
+        _msg_ids["problem"], _build_recovery_card(pid_1, round1, "verifying"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 1 轮：PodHighCPU/PodRestartCount 已恢复，其余指标好转中"
+    })
 
     _wait(8, "等待指标进一步恢复...")
 
@@ -787,7 +885,12 @@ def run_demo():
         "🎉 **全部 5 条告警对应指标已恢复正常！**"
     )
     _update_card(_msg_ids["recovery"],
-                 _build_recovery_card("P-3001", rounds_all, "passed"))
+                 _build_recovery_card(pid_1, rounds_all, "passed"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 2 轮：全部 5 条告警对应指标已恢复正常"
+    })
 
     _wait(2)
 
@@ -796,7 +899,7 @@ def run_demo():
 
     total_min = int((time.time() - _start_time) / 60) + 12
     _update_card(_msg_ids["problem"], _build_problem_card_resolved(
-        "P-3001",
+        pid_1,
         "adservice 配置变更导致交易链路超时",
         alert_count=5,
         services=["checkoutservice", "adservice", "paymentservice"],
@@ -806,6 +909,8 @@ def run_demo():
         impact="交易成功率从 99.9% 降至 82.3%，P99 延迟从 200ms 飙升至 5200ms",
         dashboard_url="https://grafana.example.com/d/problem-3001",
         alerts_data=alerts_data))
+
+    _api_call("POST", f"/api/problems/{pid_1}/resolve")
 
     _wait(2)
 

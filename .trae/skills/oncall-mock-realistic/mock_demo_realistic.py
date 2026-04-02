@@ -28,6 +28,8 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
+import urllib.request
+import urllib.error
 
 # ============================================================
 # 路径初始化
@@ -93,6 +95,27 @@ def _parse_args():
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
 PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+_default_api_base = "http://localhost:9095"
+if PROBLEM_BASE_URL:
+    import urllib.parse as _urlparse
+    _parsed = _urlparse.urlparse(PROBLEM_BASE_URL)
+    _default_api_base = f"{_parsed.scheme}://{_parsed.netloc}"
+PROBLEM_API_BASE = os.environ.get("PROBLEM_API_BASE", _default_api_base)
+
+
+def _api_call(method: str, path: str, body: dict = None) -> dict:
+    """调用 alarm-service REST API，返回 JSON 响应。失败时打印警告并返回空 dict。"""
+    url = f"{PROBLEM_API_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result
+    except Exception as e:
+        print(f"         ⚠️ API 调用失败 {method} {path}: {e}")
+        return {}
 
 
 def _problem_link(pid: str) -> str:
@@ -693,8 +716,8 @@ def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
     """恢复验证卡片：累积展示多轮验证结果（JSON 2.0，可更新）。"""
     status_map = {
         "verifying": ("orange", "📉 恢复验证中"),
-        "passed": ("green", "✅ 恢复完成"),
-        "failed": ("red", "⚠️ 恢复未达标"),
+        "passed": ("green", "✅ 恢复验证通过"),
+        "failed": ("red", "❌ 恢复验证不通过"),
     }
     color, label = status_map.get(status, ("orange", "📉 恢复验证中"))
     return {
@@ -742,6 +765,15 @@ def _build_status_card(problem_id, title, status, body):
 def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
+
+    print("  🔄 重置 Problem 数据...")
+    _api_call("POST", "/api/problems/reset")
+    _api_call("POST", "/api/problems/reinit")
+    print("  ✅ Problem 数据已重置（初始 Mock 数据已导入）")
+
+    pid_1 = ""  # 对应原来的 P-1003
+    pid_2 = ""  # 对应原来的 P-1004
+
     _alert_times = {}
 
     member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
@@ -799,7 +831,7 @@ def run_demo():
     _msg_ids["analysis_a"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_analysis_card_thinking(
-            "P-1003", "支付网关响应超时", analysis_steps_v1))
+            pid_1 or "分析中", "支付网关响应超时", analysis_steps_v1))
 
     _wait(5, "Agent 分析中...")
 
@@ -810,11 +842,21 @@ def run_demo():
         "2. ✅ Loki: 大量 `TLS handshake timeout` 错误\n"
         "3. ✅ 变更记录: 近 24h 无部署变更"
     )
+
+    resp = _api_call("POST", "/api/problems", {
+        "title": "支付网关响应超时",
+        "root_cause": "TLS 证书可能过期（初判，待确认）",
+        "alert_group_id": "AG-30001",
+        "message_id": _msg_ids.get("alert_a", ""),
+    })
+    pid_1 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_1}")
+
     _update_card(_msg_ids["analysis_a"], _build_analysis_card_done(
-        "P-1003", "支付网关响应超时",
+        pid_1, "支付网关响应超时",
         "**根因定位**：payment-gateway 的 **TLS 证书可能过期**，"
         "导致与上游支付渠道的 HTTPS 握手失败。\n\n"
-        f"📝 已创建问题 {_problem_link('P-1003')}\n"
+        f"📝 已创建问题 {_problem_link(pid_1)}\n"
         "⚠️ 置信度中等，请值班人确认。如有误请纠正。",
         analysis_steps_v1_done,
         "⭐⭐⭐ (60%) — 中等",
@@ -829,7 +871,7 @@ def run_demo():
         tags={"_env": "prod", "_pod_name": "payment-gw-5c8f9d7b4-k8x2p",
               "host": "n124-188-186"},
         dashboard_url="https://grafana.example.com/d/payment-overview",
-        duration_min=2, problem_id="P-1003"))
+        duration_min=2, problem_id=pid_1))
 
     _reply_at_oncall(_msg_ids["alert_a"],
                      "\nRCA 分析完成（置信度 60%），请查看上方卡片确认。")
@@ -860,7 +902,7 @@ def run_demo():
     _msg_ids["analysis_a2"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_analysis_card_thinking(
-            "P-1003 (重新分析)", "聚焦 CoreDNS / DNS 解析", reanalysis_steps))
+            f"{pid_1} (重新分析)", "聚焦 CoreDNS / DNS 解析", reanalysis_steps))
 
     _wait(5, "Agent 重新分析中...")
 
@@ -873,7 +915,7 @@ def run_demo():
         "4. ✅ 集群仅剩 1 个 CoreDNS 副本 → DNS 解析延迟飙升"
     )
     _update_card(_msg_ids["analysis_a2"], _build_analysis_card_done(
-        "P-1003 (更新)", "CoreDNS OOMKill 导致 DNS 解析超时",
+        f"{pid_1} (更新)", "CoreDNS OOMKill 导致 DNS 解析超时",
         "**根因定位**：CoreDNS Pod 于 15:23 因 OOM 被 Kill，"
         "集群仅剩 1 副本，DNS 解析延迟飙升至 3200ms，"
         "导致 payment-gateway 连接上游超时。\n\n"
@@ -882,6 +924,14 @@ def run_demo():
         reanalysis_steps_done,
         "⭐⭐⭐⭐⭐ (95%)",
         color="green"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/root_cause", {
+        "root_cause": "CoreDNS Pod 于 15:23 因 OOM 被 Kill，集群仅剩 1 副本，DNS 解析延迟飙升"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "rca_updated",
+        "description": "RCA 更新：排除 TLS 证书过期，确认根因为 CoreDNS OOMKill 导致 DNS 解析超时"
+    })
 
     _wait(3)
 
@@ -897,9 +947,20 @@ def run_demo():
     _msg_ids["approval_v1"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_approval_card(
-            "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
+            pid_1, "CoreDNS OOMKill 导致 DNS 解析超时",
             "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
             "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2，触发 K8s 重建"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/actions", {
+        "description": "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2，触发 K8s 重建"
+    })
+    _action_resp = _api_call("GET", f"/api/problems/{pid_1}")
+    _action_id_1 = ""
+    if _action_resp:
+        for _act in _action_resp.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_1 = _act["id"]
+                break
 
     _reply_at_oncall(_msg_ids["alert_a"], "\n请审批上方止损方案。")
 
@@ -916,10 +977,17 @@ def run_demo():
     _wait(1)
 
     _update_card(_msg_ids["approval_v1"], _build_approval_result_card(
-        "P-1003", "CoreDNS OOMKill 导致 DNS 解析超时",
+        pid_1, "CoreDNS OOMKill 导致 DNS 解析超时",
         "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
         "删除 CoreDNS Pod coredns-5d78c9869d-xk7m2",
         result="rejected"))
+
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/reject", {"operator": _ONCALL_PERSON_NAME})
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "action_rejected",
+        "description": f"止损方案被 {_ONCALL_PERSON_NAME} 拒绝：仅剩 1 副本不能删 Pod，需先扩容"
+    })
 
     _wait(2)
 
@@ -932,9 +1000,20 @@ def run_demo():
     _msg_ids["approval_v2"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_approval_card(
-            "P-1003 v2", "CoreDNS OOMKill 导致 DNS 解析超时",
+            f"{pid_1} v2", "CoreDNS OOMKill 导致 DNS 解析超时",
             "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
             "① 扩容 CoreDNS 到 3 副本  ② 内存 limit 170Mi→256Mi  ③ 等新副本 Ready"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/actions", {
+        "description": "① 扩容 CoreDNS 到 3 副本 ② 内存 limit 170Mi→256Mi ③ 等新副本 Ready"
+    })
+    _action_resp = _api_call("GET", f"/api/problems/{pid_1}")
+    _action_id_2 = ""
+    if _action_resp:
+        for _act in _action_resp.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_2 = _act["id"]
+                break
 
     _reply_at_oncall(_msg_ids["alert_a"], "\n方案已更新，请审批。")
 
@@ -943,10 +1022,13 @@ def run_demo():
     # 值班人批准
     _pause("✅ 值班人批准")
     _update_card(_msg_ids["approval_v2"], _build_approval_result_card(
-        "P-1003 v2", "CoreDNS OOMKill 导致 DNS 解析超时",
+        f"{pid_1} v2", "CoreDNS OOMKill 导致 DNS 解析超时",
         "CoreDNS Pod OOMKill → DNS 解析延迟飙升",
         "① 扩容 CoreDNS 到 3 副本  ② 内存 limit 170Mi→256Mi  ③ 等新副本 Ready",
         result="approved"))
+
+    if _action_id_2:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_2}/approve", {"operator": _ONCALL_PERSON_NAME})
 
     _wait(1)
 
@@ -959,7 +1041,7 @@ def run_demo():
     _msg_ids["exec_card"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_execution_card_running(
-            "P-1003", "CoreDNS OOMKill 止损", exec_steps_1))
+            pid_1, "CoreDNS OOMKill 止损", exec_steps_1))
 
     _wait(4, "K8s 正在创建新 Pod...")
 
@@ -971,7 +1053,7 @@ def run_demo():
     )
     _update_card(_msg_ids["exec_card"],
                  _build_execution_card_running(
-                     "P-1003", "CoreDNS OOMKill 止损", exec_steps_2))
+                     pid_1, "CoreDNS OOMKill 止损", exec_steps_2))
 
     _wait(3, "调整内存 limit...")
 
@@ -994,8 +1076,18 @@ def run_demo():
     )
     _update_card(_msg_ids["exec_card"],
                  _build_execution_card_done(
-                     "P-1003", "CoreDNS OOMKill 止损",
+                     pid_1, "CoreDNS OOMKill 止损",
                      exec_result, exec_steps_done))
+
+    if _action_id_2:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_2}/complete", {
+            "result": "CoreDNS 扩容至 3 副本，内存 limit 调整至 256Mi，全部 Ready"
+        })
+    _api_call("POST", f"/api/problems/{pid_1}/status", {"status": "recovering"})
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "execution_done",
+        "description": "止损执行完成：CoreDNS 扩容至 3 副本，内存 limit 170Mi→256Mi，全部 Ready"
+    })
 
     _wait(3)
 
@@ -1048,25 +1140,35 @@ def run_demo():
     _msg_ids["analysis_b"] = _reply_card_in_thread(
         _msg_ids["alert_b"],
         _build_analysis_card_thinking(
-            "P-1004", "Kafka 消费延迟异常", kafka_steps))
+            pid_2 or "分析中", "Kafka 消费延迟异常", kafka_steps))
 
     _wait(5, "Agent 分析 Kafka 指标...")
 
     # 分析卡住，更新卡片为"需要协助"
     _pause("❓ Agent 分析无果，更新卡片 + @值班人求助")
+
+    resp = _api_call("POST", "/api/problems", {
+        "title": "Kafka 消费延迟异常",
+        "root_cause": "暂无法确定（Agent 分析无果，需人工协助）",
+        "alert_group_id": "AG-30002",
+        "message_id": _msg_ids.get("alert_b", ""),
+    })
+    pid_2 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_2}")
+
     kafka_stuck_card = {
         "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "template": "orange",
             "title": {"tag": "plain_text",
-                      "content": f"❓ 需要协助 — {_problem_link('P-1004')}"},
+                      "content": f"❓ 需要协助 — {_problem_link(pid_2)}"},
             "subtitle": {"tag": "plain_text", "content": "Kafka 消费延迟异常"},
         },
         "body": {
             "elements": [
                 {"tag": "markdown",
-                 "content": f"📝 已创建问题 {_problem_link('P-1004')}\n\n"
+                 "content": f"📝 已创建问题 {_problem_link(pid_2)}\n\n"
                             "🤖 暂时无法确定根因，需要值班人提供线索：\n"
                             "- order-processor 最近是否有发版？\n"
                             "- 是否有已知 bug 与此相关？"},
@@ -1106,7 +1208,7 @@ def run_demo():
         tags={"_env": "prod", "consumer_group": "order-events",
               "host": "n124-190-055"},
         dashboard_url="https://grafana.example.com/d/kafka-overview",
-        duration_min=5, problem_id="P-1004"))
+        duration_min=5, problem_id=pid_2))
 
     _reply_at_oncall(_msg_ids["alert_b"],
                      "\n分析暂无头绪，请查看上方卡片并提供线索。")
@@ -1119,6 +1221,14 @@ def run_demo():
                            f"👨‍💻 [{_ONCALL_PERSON_NAME}]\n"
                            "这个是上周三发版引入的 bug，修复 MR 已提交，下周一发版。")
 
+    _api_call("POST", f"/api/problems/{pid_2}/root_cause", {
+        "root_cause": "order-processor N+1 查询 bug（ISSUE-456），下周一发版修复"
+    })
+    _api_call("POST", f"/api/problems/{pid_2}/events", {
+        "event_type": "human_input",
+        "description": f"{_ONCALL_PERSON_NAME} 提供线索：已知 bug ISSUE-456，修复 MR 已提交，下周一发版"
+    })
+
     _wait(2)
 
     _pause("🤖 Agent 执行指令")
@@ -1129,14 +1239,14 @@ def run_demo():
     _msg_ids["exec_kafka"] = _reply_card_in_thread(
         _msg_ids["alert_b"],
         _build_execution_card_running(
-            "P-1004", "Kafka 消费延迟处理", exec_kafka_steps))
+            pid_2, "Kafka 消费延迟处理", exec_kafka_steps))
 
     _wait(2)
 
     exec_kafka_done_steps = (
         "1. ✅ 关联 ISSUE-456\n"
         "2. ✅ 报警规则 KafkaConsumerLagHigh 静默 7 天\n"
-        f"3. ✅ {_problem_link('P-1004')} 标记为 Resolved"
+        f"3. ✅ {_problem_link(pid_2)} 标记为 Resolved"
     )
     exec_kafka_result = (
         "**执行结果**：全部 3 个步骤执行成功 ✅\n\n"
@@ -1144,12 +1254,18 @@ def run_demo():
         "|------|------|\n"
         "| 关联 ISSUE-456 | ✅ 已关联 |\n"
         "| 报警规则静默 | ✅ 静默 7 天 |\n"
-        f"| {_problem_link('P-1004')} 状态 | ✅ Resolved |"
+        f"| {_problem_link(pid_2)} 状态 | ✅ Resolved |"
     )
     _update_card(_msg_ids["exec_kafka"],
                  _build_execution_card_done(
-                     "P-1004", "Kafka 消费延迟处理",
+                     pid_2, "Kafka 消费延迟处理",
                      exec_kafka_result, exec_kafka_done_steps))
+
+    _api_call("POST", f"/api/problems/{pid_2}/events", {
+        "event_type": "action_done",
+        "description": "关联 ISSUE-456，报警规则静默 7 天"
+    })
+    _api_call("POST", f"/api/problems/{pid_2}/resolve")
 
     _wait(1)
 
@@ -1166,10 +1282,10 @@ def run_demo():
         dashboard_url="https://grafana.example.com/d/kafka-overview",
         duration_min=5,
         alert_time=_alert_times.get("alert_b"),
-        problem_id="P-1004"))
+        problem_id=pid_2))
 
     _reply_card_in_thread(_msg_ids["alert_b"], _build_status_card(
-        "P-1004", "Kafka 消费延迟异常",
+        pid_2, "Kafka 消费延迟异常",
         "resolved",
         "**处理结果**：已知 bug（ISSUE-456），无需止损\n"
         "**操作**: 报警规则静默 7 天 + 问题标记 Resolved\n"
@@ -1200,7 +1316,12 @@ def run_demo():
     )
     _msg_ids["recovery_card"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
-        _build_recovery_card("P-1003", "恢复验证", verify_round1, "verifying"))
+        _build_recovery_card(pid_1, "恢复验证", verify_round1, "verifying"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 1 轮：CoreDNS 延迟 850ms（↓），gateway P99 2100ms（↓），支付成功率 88.7%（↑），持续观察"
+    })
 
     _wait(6, "等待指标进一步恢复...")
 
@@ -1226,8 +1347,13 @@ def run_demo():
         "🟡 大幅好转，但未完全恢复。可能还有其他因素。"
     )
     _update_card(_msg_ids["recovery_card"],
-                 _build_recovery_card("P-1003", "恢复验证",
+                 _build_recovery_card(pid_1, "恢复验证",
                                       verify_rounds_all, "failed"))
+
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 2 轮：大幅好转但未完全恢复 — CoreDNS 延迟 120ms（偏高），gateway P99 950ms，支付成功率 96.1%（未达标 99.5%）"
+    })
 
     _reply_at_oncall(_msg_ids["alert_a"],
                      "\n恢复验证未完全达标（详见上方卡片），建议人工介入。")
@@ -1242,11 +1368,17 @@ def run_demo():
                            "我怀疑 Corefile 缓存配置有问题，手动排查。\n"
                            "你先不要自动操作了。")
 
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "takeover",
+        "description": f"{_ONCALL_PERSON_NAME} 接管处理：怀疑 Corefile 缓存配置有问题，手动排查"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/status", {"status": "processing"})
+
     _wait(2)
 
     _pause("🤖 Agent 确认移交")
     _reply(_msg_ids["alert_a"],
-           f"🤖 {_problem_link('P-1003')} 已移交 {_ONCALL_PERSON_NAME} 处理，我停止自动操作。\n"
+           f"🤖 {_problem_link(pid_1)} 已移交 {_ONCALL_PERSON_NAME} 处理，我停止自动操作。\n"
            "后续需要数据查询随时 @我。🫡")
 
     _wait(2)

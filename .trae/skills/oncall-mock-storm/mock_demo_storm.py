@@ -43,6 +43,8 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
+import urllib.request
+import urllib.error
 
 # ============================================================
 # 路径初始化
@@ -108,6 +110,26 @@ def _parse_args():
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
 PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+_default_api_base = "http://localhost:9095"
+if PROBLEM_BASE_URL:
+    import urllib.parse as _urlparse
+    _parsed = _urlparse.urlparse(PROBLEM_BASE_URL)
+    _default_api_base = f"{_parsed.scheme}://{_parsed.netloc}"
+PROBLEM_API_BASE = os.environ.get("PROBLEM_API_BASE", _default_api_base)
+
+
+def _api_call(method: str, path: str, body: dict = None) -> dict:
+    url = f"{PROBLEM_API_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result
+    except Exception as e:
+        print(f"         ⚠️ API 调用失败 {method} {path}: {e}")
+        return {}
 
 
 def _problem_link(pid: str) -> str:
@@ -681,8 +703,8 @@ def _build_status_card(problem_id, title, status, body):
 def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
     status_map = {
         "verifying": ("orange", "📉 恢复验证中"),
-        "passed": ("green", "✅ 恢复完成"),
-        "failed": ("red", "⚠️ 恢复未达标"),
+        "passed": ("green", "✅ 恢复验证通过"),
+        "failed": ("red", "❌ 恢复验证不通过"),
     }
     color, label = status_map.get(status, ("orange", "📉 恢复验证中"))
     return {
@@ -767,6 +789,12 @@ ALERTS = [
 def run_demo():
     global _start_time, _oncall_open_id
     _start_time = time.time()
+    print("  🔄 重置 Problem 数据...")
+    _api_call("POST", "/api/problems/reset")
+    _api_call("POST", "/api/problems/reinit")
+    print("  ✅ Problem 数据已重置（初始 Mock 数据已导入）")
+    pid_1 = ""  # 对应原来的 P-2001
+    pid_2 = ""  # 对应原来的 P-2002
     _alert_times = {}
 
     member = feishu_api.find_member_by_name(name=_ONCALL_PERSON_NAME)
@@ -920,6 +948,14 @@ def run_demo():
     # ⚡ 风暴触发！创建 Problem P-2001 + 发风暴卡片（群级别）
     # =============================================================
     _pause("🌪️ 风暴触发！创建 P-2001 + 发送风暴 Problem 卡片")
+    resp = _api_call("POST", "/api/problems", {
+        "title": "K8s 节点 n128-052-031 资源耗尽引发报警风暴",
+        "root_cause": "节点资源耗尽（初判）",
+        "alert_group_id": "AG-40001",
+        "message_id": "",
+    })
+    pid_1 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_1}")
     storm_list = (
         "- **AG-40001** NodeHighCPU (k8s-node-pool) · Critical\n"
         "- **AG-40002** PodCrashLoopBackOff (checkoutservice) · Critical\n"
@@ -928,8 +964,16 @@ def run_demo():
         "- **AG-40005** ServiceHighLatency (productcatalogservice) · Warning"
     )
     _msg_ids["storm_card"] = _send_card(
-        _build_storm_problem_card("P-2001", 5, 4, 30, storm_list))
+        _build_storm_problem_card(pid_1, 5, 4, 30, storm_list))
     storm_mid = _msg_ids["storm_card"]
+
+    for ag_id, desc in [
+        ("AG-40002", "checkoutservice 的 PodCrashLoopBackOff 告警 (AG-40002) 归并至本问题"),
+        ("AG-40003", "adservice 的 ServiceHighErrorRate 告警 (AG-40003) 归并至本问题"),
+        ("AG-40004", "cartservice 的 PodOOMKilled 告警 (AG-40004) 归并至本问题"),
+        ("AG-40005", "productcatalogservice 的 ServiceHighLatency 告警 (AG-40005) 归并至本问题"),
+    ]:
+        _api_call("POST", f"/api/problems/{pid_1}/merge", {"alert_group_id": ag_id, "description": desc})
 
     _wait(1)
 
@@ -939,25 +983,25 @@ def run_demo():
     analysis_1_aborted = (
         "1. ✅ 查询节点指标: CPU 98.7%, 内存 96.2%\n"
         "2. ✅ kubelet 日志: `eviction manager: attempting to reclaim resources`\n"
-        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link(pid_1)}**"
     )
     _update_card(_msg_ids["analysis_1"], _build_analysis_card_aborted(
-        "AG-40001", "NodeHighCPU 分析", analysis_1_aborted, "P-2001"))
+        "AG-40001", "NodeHighCPU 分析", analysis_1_aborted, pid_1))
 
     analysis_2_aborted = (
         "1. ✅ Pod 状态: CrashLoopBackOff, 重启 5 次\n"
         "2. ✅ Pod 事件: Back-off restarting failed container\n"
-        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+        f"3. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link(pid_1)}**"
     )
     _update_card(_msg_ids["analysis_2"], _build_analysis_card_aborted(
-        "AG-40002", "PodCrashLoopBackOff 分析", analysis_2_aborted, "P-2001"))
+        "AG-40002", "PodCrashLoopBackOff 分析", analysis_2_aborted, pid_1))
 
     analysis_3_aborted = (
         "1. ✅ 错误率: 0.1% → 45%\n"
-        f"2. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link('P-2001')}**"
+        f"2. ⏹️ **报警风暴触发，中止独立分析，归并至 {_problem_link(pid_1)}**"
     )
     _update_card(_msg_ids["analysis_3"], _build_analysis_card_aborted(
-        "AG-40003", "ServiceHighErrorRate 分析", analysis_3_aborted, "P-2001"))
+        "AG-40003", "ServiceHighErrorRate 分析", analysis_3_aborted, pid_1))
 
     print(f"         ✅ 3 张分析卡片已更新为[已中止]")
 
@@ -967,7 +1011,7 @@ def run_demo():
     _pause("🔗 回到每条告警下通知已归并至 P-2001")
     for a in ALERTS:
         _reply(_msg_ids[a["key"]],
-               f"🔗 已归并至 {_problem_link('P-2001')}（报警风暴），中止独立分析，由 {_problem_link('P-2001')} 统一处理。")
+               f"🔗 已归并至 {_problem_link(pid_1)}（报警风暴），中止独立分析，由 {_problem_link(pid_1)} 统一处理。")
     print(f"         ✅ 5 条告警已全部归并")
 
     for a in ALERTS:
@@ -976,7 +1020,7 @@ def run_demo():
             alert_id=a["alert_id"], env="prod", rule_name=a["rule_name"],
             oncall_users=[_ONCALL_PERSON_NAME], tags=a["tags"],
             dashboard_url=a["dashboard_url"], duration_min=a["duration_min"],
-            problem_id="P-2001"))
+            problem_id=pid_1))
     print(f"         ✅ 5 条告警卡片已更新所属问题为 P-2001")
 
     _wait(1)
@@ -984,6 +1028,10 @@ def run_demo():
     # --- P-2001 话题内：静默所有报警规则 ---
     _pause("🔇 P-2001 话题内：静默所有报警规则")
     _reply(storm_mid, "🔇 已静默所有相关报警规则（2 小时），避免风暴期间持续报警干扰。")
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "silence",
+        "description": "已静默所有 5 条相关报警规则（2 小时），避免风暴持续干扰"
+    })
 
     _wait(2)
 
@@ -1004,7 +1052,7 @@ def run_demo():
     )
     _msg_ids["analysis_storm"] = _reply_card_in_thread(
         storm_mid,
-        _build_analysis_card_thinking("P-2001", "风暴关联分析", analysis_steps))
+        _build_analysis_card_thinking(pid_1, "风暴关联分析", analysis_steps))
 
     _wait(5, "Agent 风暴模式 RCA 分析中...")
 
@@ -1034,9 +1082,16 @@ def run_demo():
         "**建议止损**：清理节点上的异常进程，释放资源，等待 Pod 自动恢复。"
     )
     _update_card(_msg_ids["analysis_storm"], _build_analysis_card_done(
-        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
+        pid_1, "K8s 节点 n128-052-031 资源耗尽",
         conclusion_md, analysis_steps_done,
         "⭐⭐⭐⭐ (85%)", color="orange"))
+    _api_call("POST", f"/api/problems/{pid_1}/root_cause", {
+        "root_cause": "K8s 节点 n128-052-031 资源耗尽（CPU 98.7% / 内存 96.2%），残留大数据任务进程持续消耗资源"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "rca_done",
+        "description": "RCA 完成：节点 n128-052-031 残留大数据任务进程耗尽资源，触发 kubelet eviction 影响 4 个服务"
+    })
 
     _wait(2)
 
@@ -1055,6 +1110,18 @@ def run_demo():
         storm_mid,
         f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
         "确认了，这个节点昨晚有个大数据任务没清理干净。我去节点上 kill 掉那个进程。")
+    _api_call("POST", f"/api/problems/{pid_1}/actions", {
+        "description": "登录节点 n128-052-031 清理残留大数据任务进程"
+    })
+    _action_resp = _api_call("GET", f"/api/problems/{pid_1}")
+    _action_id_1 = ""
+    if _action_resp:
+        for _act in _action_resp.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_1 = _act["id"]
+                break
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/approve", {"operator": _ONCALL_PERSON_NAME})
 
     _wait(2)
     _reply(storm_mid, "🤖 收到，等待处理完成后我来验证恢复情况。")
@@ -1067,6 +1134,10 @@ def run_demo():
         storm_mid,
         f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
         "搞定了，进程已经 kill 掉，节点 CPU 已经在下降。帮我取消静默看看恢复情况。")
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/complete", {
+            "result": "残留进程已 kill，节点 CPU 在下降"
+        })
 
     _wait(2)
 
@@ -1082,6 +1153,11 @@ def run_demo():
     _reply(storm_mid,
            "🤖 收到，正在取消静默...\n\n"
            "🔔 已取消 5 条告警的静默，恢复正常报警推送。开始恢复验证。")
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "unsilence",
+        "description": "已取消 5 条告警的静默，恢复正常报警推送"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/status", {"status": "recovering"})
 
     _wait(3, "等待指标回落...")
 
@@ -1100,57 +1176,28 @@ def run_demo():
     )
     _msg_ids["recovery_card"] = _reply_card_in_thread(
         storm_mid,
-        _build_recovery_card("P-2001", "恢复验证", verify_round1, "failed"))
+        _build_recovery_card(pid_1, "恢复验证", verify_round1, "failed"))
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 1 轮：AG-40001~40004 已恢复，AG-40005 (productcatalogservice) 未恢复 P99=3800ms"
+    })
 
     _wait(2)
 
     # --- 纠偏：Agent 发现有告警未恢复，启动独立分析 ---
     _pause("⚡ 纠偏：AG-40005 未恢复，启动独立分析")
     _reply(storm_mid,
-           "⚠️ AG-40005 (ServiceHighLatency) 在节点资源恢复后仍未恢复，"
-           "可能存在独立根因。启动针对性分析...")
-
-    _wait(2)
-
-    correction_steps = (
-        "1. ✅ 排除节点资源问题（CPU 32.1%，内存 50%，已正常）\n"
-        "2. ✅ productcatalogservice Pod Running，无 OOM/CrashLoop\n"
-        "3. ✅ Tempo 链路: productcatalogservice → Redis 调用 P99=3500ms\n"
-        "4. ✅ Redis 指标: 内存使用率 95%，大量 eviction\n"
-        "5. ✅ 根因: 风暴期间大量请求重试导致 Redis 缓存被打满"
-    )
-    _msg_ids["correction_analysis"] = _reply_card_in_thread(
-        storm_mid,
-        _build_analysis_card_thinking(
-            "P-2001 (纠偏)", "AG-40005 独立根因分析", correction_steps))
-
-    _wait(4, "Agent 分析 AG-40005...")
-
-    correction_conclusion = (
-        "**独立根因**：productcatalogservice 的延迟并非节点资源问题，"
-        "而是风暴期间大量重试请求打满了 Redis 缓存（内存 95%），"
-        "导致频繁 eviction 和缓存穿透。\n\n"
-        f"⚠️ **该根因与 {_problem_link('P-2001')}（节点资源耗尽）无关，需要创建独立问题。**"
-    )
-    correction_steps_done = (
-        "1. ✅ 排除节点资源问题（CPU 32.1%，内存 50%，已正常）\n"
-        "2. ✅ productcatalogservice Pod Running，无 OOM/CrashLoop\n"
-        "3. ✅ Tempo: productcatalogservice → Redis P99=3500ms\n"
-        "4. ✅ Redis 内存使用率 95%，大量 key eviction\n"
-        "5. ✅ 根因确认: 风暴期间重试风暴打满 Redis 缓存"
-    )
-    _update_card(_msg_ids["correction_analysis"], _build_analysis_card_done(
-        "P-2001 (纠偏)", "AG-40005 独立根因: Redis 缓存打满",
-        correction_conclusion, correction_steps_done,
-        "⭐⭐⭐⭐ (90%)", color="orange"))
+           "⚠️ AG-40005 (ServiceHighLatency) 报警仍未恢复，"
+           "可能存在其他原因，从该问题中剔除。")
 
     _wait(2)
 
     # --- 从 P-2001 剔除 AG-40005 ---
     _pause("🔀 将 AG-40005 从 P-2001 剔除")
-    _reply(storm_mid,
-           f"🔀 AG-40005 (ServiceHighLatency) 根因与 {_problem_link('P-2001')} 不同，"
-           f"已从 {_problem_link('P-2001')} 剔除，将在原告警话题下重新分析处理。")
+    _api_call("POST", f"/api/problems/{pid_1}/remove_alert", {
+        "alert_group_id": "AG-40005",
+        "reason": "AG-40005 根因与节点资源耗尽无关，为 Redis 缓存打满的独立问题"
+    })
 
     _wait(1)
 
@@ -1165,17 +1212,22 @@ def run_demo():
         "- ✅ **AG-40004** PodOOMKilled · OOMKilled → Running\n"
         "- ❌ **AG-40005** ServiceHighLatency · P99 4200ms → 3800ms（未恢复）\n\n"
         "---\n\n"
-        f"**第 2 轮** ({round2_time})  ·  AG-40005 已剔除，独立处理\n\n"
+        f"**第 2 轮** ({round2_time})\n\n"
         "- ✅ **AG-40001** NodeHighCPU · CPU 98.7% → 30.5%\n"
         "- ✅ **AG-40002** PodCrashLoopBackOff · 重启 5 次 → Running\n"
         "- ✅ **AG-40003** ServiceHighErrorRate · 错误率 45% → 0.1%\n"
         "- ✅ **AG-40004** PodOOMKilled · OOMKilled → Running\n"
-        f"- 🔀 AG-40005 已剔除，由 {_problem_link('P-2002')} 独立处理\n\n"
-        f"{_problem_link('P-2001')} 关联的 4/4 告警全部恢复 ✅"
+        "- ❌ **AG-40005** ServiceHighLatency · P99 4200ms → 3800ms（未恢复）\n\n"
+        "4/5 告警已恢复，1 条未恢复"
     )
     _update_card(_msg_ids["recovery_card"],
-                 _build_recovery_card("P-2001", "恢复验证",
-                                      verify_p2001_final, "passed"))
+                 _build_recovery_card(pid_1, "恢复验证",
+                                      verify_p2001_final, "failed"))
+    _api_call("POST", f"/api/problems/{pid_1}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证第 2 轮：AG-40001~40004 全部恢复，AG-40005 已剔除独立处理"
+    })
+    _api_call("POST", f"/api/problems/{pid_1}/resolve")
 
     _wait(1)
 
@@ -1190,8 +1242,8 @@ def run_demo():
             tags=a.get("tags"),
             dashboard_url=a.get("dashboard_url", ""),
             alert_time=_alert_times.get(a["key"]),
-            problem_id="P-2001"))
-        _reply(_msg_ids[a["key"]], f"✅ 已恢复，告警已消除。{_problem_link('P-2001')} 问题已解决。")
+            problem_id=pid_1))
+        _reply(_msg_ids[a["key"]], f"✅ 已恢复，告警已消除。{_problem_link(pid_1)} 问题已解决。")
     print(f"         ✅ 前 4 条告警卡片已更新为已恢复")
 
     _wait(1)
@@ -1203,7 +1255,7 @@ def run_demo():
         "- ✅ **AG-40002** PodCrashLoopBackOff (checkoutservice)\n"
         "- ✅ **AG-40003** ServiceHighErrorRate (adservice)\n"
         "- ✅ **AG-40004** PodOOMKilled (cartservice)\n"
-        f"- 🔀 AG-40005 剔除，由 {_problem_link('P-2002')} 独立处理\n\n"
+        "- 🔀 AG-40005 已剔除，独立处理\n\n"
         "根因：节点 n128-052-031 残留大数据任务进程耗尽资源\n"
         "止损：清理进程 + 取消静默\n"
         "处理过程：风暴检测 → 归并 + 静默 → RCA → 止损 → 恢复验证 → 纠偏剔除"
@@ -1213,15 +1265,13 @@ def run_demo():
         "- ✅ **AG-40002** PodCrashLoopBackOff (checkoutservice)\n"
         "- ✅ **AG-40003** ServiceHighErrorRate (adservice)\n"
         "- ✅ **AG-40004** PodOOMKilled (cartservice)\n"
-        f"- 🔀 AG-40005 剔除，由 {_problem_link('P-2002')} 独立处理"
+        "- 🔀 AG-40005 已剔除，独立处理"
     )
     _update_card(storm_mid, _build_storm_problem_card_resolved(
-        "P-2001", 5, 4, 30, storm_resolved_list,
-        resolve_note=f"节点 n128-052-031 残留进程已清理，4/5 告警已恢复，AG-40005 由 {_problem_link('P-2002')} 独立处理"))
+        pid_1, 5, 4, 30, storm_resolved_list,
+        resolve_note="节点 n128-052-031 残留进程已清理，4/5 告警已恢复，AG-40005 已剔除，独立处理"))
 
-    _reply_card_in_thread(storm_mid, _build_status_card(
-        "P-2001", "K8s 节点 n128-052-031 资源耗尽",
-        "resolved", p2001_final_body))
+    _reply(storm_mid, f"✅ 已恢复，告警已消除。{_problem_link(pid_1)} 问题已解决。")
 
     _wait(2)
 
@@ -1236,16 +1286,28 @@ def run_demo():
 
     # --- AG-40005 话题下：通知剔除 + 重新分析 ---
     _pause("🔀 AG-40005 话题下：通知剔除，创建 P-2002，重新分析")
+    resp = _api_call("POST", "/api/problems", {
+        "title": "Redis 缓存打满导致 productcatalogservice 延迟",
+        "root_cause": "风暴期间重试请求打满 Redis 缓存（内存 95%），导致频繁 eviction 和缓存穿透",
+        "alert_group_id": "AG-40005",
+        "message_id": _msg_ids.get("alert_5", ""),
+    })
+    pid_2 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_2}")
+    _api_call("POST", f"/api/problems/{pid_2}/events", {
+        "event_type": "alert_merged",
+        "description": f"productcatalogservice 的 ServiceHighLatency 告警 (AG-40005) 从 {pid_1} 纠偏移入本问题"
+    })
     _reply(alert5_mid,
-           f"🔀 已从 {_problem_link('P-2001')} 剔除（根因不同）。\n"
-           f"📝 已创建独立问题 {_problem_link('P-2002')}，现在重新分析。")
+           f"🔀 已从 {_problem_link(pid_1)} 剔除（根因不同）。\n"
+           f"📝 已创建独立问题 {_problem_link(pid_2)}，现在重新分析。")
 
     _update_card(_msg_ids["alert_5"], _build_alert_card_acked(
         a5["name"], a5["service"], a5["severity"], a5["summary"],
         alert_id=a5["alert_id"], env="prod", rule_name=a5["rule_name"],
         oncall_users=[_ONCALL_PERSON_NAME], tags=a5["tags"],
         dashboard_url=a5["dashboard_url"], duration_min=a5["duration_min"],
-        problem_id="P-2002"))
+        problem_id=pid_2))
 
     _wait(2)
 
@@ -1260,7 +1322,7 @@ def run_demo():
     _msg_ids["p2002_analysis"] = _reply_card_in_thread(
         alert5_mid,
         _build_analysis_card_done(
-            "P-2002", "Redis 缓存打满导致 productcatalogservice 延迟",
+            pid_2, "Redis 缓存打满导致 productcatalogservice 延迟",
             "**根因定位**：风暴期间大量重试请求打满 Redis 缓存（内存 95%），"
             "导致频繁 eviction 和缓存穿透，productcatalogservice P99 延迟 3800ms。\n\n"
             "**建议止损**：清理 Redis 缓存或重启 productcatalogservice。",
@@ -1272,7 +1334,7 @@ def run_demo():
     # --- @值班人 ---
     _pause("🤖 AG-40005 话题内：@值班人建议止损")
     _reply_at_oncall(alert5_mid,
-                     f"{_problem_link('P-2002')} 根因为 Redis 缓存打满。"
+                     f" {pid_2} 根因为 Redis 缓存打满。"
                      "建议清理 Redis 缓存或重启 productcatalogservice。")
 
     _wait(3, "等待值班人处理...")
@@ -1283,6 +1345,21 @@ def run_demo():
         alert5_mid,
         f"👨‍💻 [{_ONCALL_PERSON_NAME}] "
         "已执行 Redis FLUSHDB 清理缓存，productcatalogservice 正在重建缓存。")
+    _api_call("POST", f"/api/problems/{pid_2}/actions", {
+        "description": "执行 Redis FLUSHDB 清理缓存"
+    })
+    _action_resp2 = _api_call("GET", f"/api/problems/{pid_2}")
+    _action_id_2 = ""
+    if _action_resp2:
+        for _act in _action_resp2.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_2 = _act["id"]
+                break
+    if _action_id_2:
+        _api_call("POST", f"/api/problems/{pid_2}/actions/{_action_id_2}/approve", {"operator": _ONCALL_PERSON_NAME})
+        _api_call("POST", f"/api/problems/{pid_2}/actions/{_action_id_2}/complete", {
+            "result": "Redis FLUSHDB 清理缓存完成，productcatalogservice 重建缓存中"
+        })
 
     _wait(2)
     _reply(alert5_mid, "🤖 收到，等待缓存重建后进行恢复验证。")
@@ -1300,7 +1377,12 @@ def run_demo():
     )
     _msg_ids["p2002_recovery"] = _reply_card_in_thread(
         alert5_mid,
-        _build_recovery_card("P-2002", "恢复验证", p2002_verify, "passed"))
+        _build_recovery_card(pid_2, "恢复验证", p2002_verify, "passed"))
+    _api_call("POST", f"/api/problems/{pid_2}/events", {
+        "event_type": "recovery_check",
+        "description": "恢复验证：AG-40005 P99 从 4200ms 恢复至 85ms，Redis 内存 42%"
+    })
+    _api_call("POST", f"/api/problems/{pid_2}/resolve")
 
     _wait(1)
 
@@ -1322,11 +1404,9 @@ def run_demo():
         oncall_users=["赵欣欣"],
         tags={"_env": "prod", "host": "n128-055-012"},
         alert_time=_alert_times.get("alert_5"),
-        problem_id="P-2002"))
+        problem_id=pid_2))
 
-    _reply_card_in_thread(alert5_mid, _build_status_card(
-        "P-2002", "Redis 缓存打满导致 productcatalogservice 延迟",
-        "resolved", p2002_final_body))
+    _reply(alert5_mid, f"✅ 已恢复，告警已消除。{_problem_link(pid_2)} 问题已解决。")
 
     _wait(2)
 

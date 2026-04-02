@@ -692,8 +692,8 @@ def _build_execution_card_done(problem_id, title, result_md, steps_md):
 def _build_recovery_card(problem_id, title, rounds_md, status="verifying"):
     status_map = {
         "verifying": ("orange", "📉 恢复验证中"),
-        "passed": ("green", "✅ 恢复完成"),
-        "partial": ("orange", "⚠️ 部分恢复"),
+        "passed": ("green", "✅ 恢复验证通过"),
+        "failed": ("red", "❌ 恢复验证不通过"),
     }
     color, label = status_map.get(status, ("orange", "📉 恢复验证中"))
     return {
@@ -1079,7 +1079,7 @@ def run_demo():
     )
     _update_card(_msg_ids["recovery_card"],
                  _build_recovery_card(pid_1, "恢复验证",
-                                      verify_rounds_all, "partial"))
+                                      verify_rounds_all, "failed"))
 
     _wait(3, f"Agent 准备将C从{pid_1}移除...")
 
