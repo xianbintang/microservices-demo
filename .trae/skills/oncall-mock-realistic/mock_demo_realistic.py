@@ -277,7 +277,7 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
                                 env="", rule_name="", oncall_users=None,
                                 notify_channel="Lark", tags=None,
                                 dashboard_url="", duration_min=0,
-                                resolve_note="", alert_time=None):
+                                alert_time=None, problem_id=""):
     severity_label = severity.capitalize() if severity else "Warning"
 
     now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
@@ -287,7 +287,6 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         resolve_time_text = f"{now_str}（持续{elapsed_min}min）"
     else:
         resolve_time_text = now_str
-    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
 
     elements = []
 
@@ -297,12 +296,14 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
     basic_lines.append(f"**服务:** {service}")
     if rule_name:
         basic_lines.append(f"**规则:** {rule_name}")
-    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    basic_lines.append(f"**报警时间:** {now_str}")
     basic_lines.append(f"**恢复时间:** {resolve_time_text}")
     if oncall_users:
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -315,9 +316,6 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         for k, v in tags.items():
             tag_lines.append(f"  {k}: `{v}`")
         elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
-
-    if resolve_note:
-        elements.append({"tag": "markdown", "content": f"**恢复说明:** {resolve_note}"})
 
     elements.append({"tag": "hr"})
 
@@ -380,7 +378,7 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
                             env="", rule_name="", oncall_users=None,
                             notify_channel="Lark", tags=None,
                             dashboard_url="", duration_min=0,
-                            silence_duration="30 min"):
+                            silence_duration="30 min", problem_id=""):
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -400,6 +398,8 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -820,6 +820,17 @@ def run_demo():
         "⭐⭐⭐ (60%) — 中等",
         color="orange"))
 
+    # 告警A归属P-1003，更新告警卡片添加所属问题
+    _update_card(_msg_ids["alert_a"], _build_alert_card_acked(
+        "PaymentServiceTimeout", "payment-gateway", "critical",
+        "支付服务 P99 延迟从 300ms 飙升至 8000ms，大量支付请求超时",
+        alert_id="AG-30001", env="prod", rule_name="PaymentServiceTimeout",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "payment-gw-5c8f9d7b4-k8x2p",
+              "host": "n124-188-186"},
+        dashboard_url="https://grafana.example.com/d/payment-overview",
+        duration_min=2, problem_id="P-1003"))
+
     _reply_at_oncall(_msg_ids["alert_a"],
                      "\nRCA 分析完成（置信度 60%），请查看上方卡片确认。")
 
@@ -1086,6 +1097,17 @@ def run_demo():
     }
     _update_card(_msg_ids["analysis_b"], kafka_stuck_card)
 
+    # 告警B归属P-1004，更新告警卡片添加所属问题
+    _update_card(_msg_ids["alert_b"], _build_alert_card_acked(
+        "KafkaConsumerLagHigh", "order-processor", "warning",
+        "Kafka consumer group order-events 消费 lag 从 50 飙升至 8500+",
+        alert_id="AG-30002", env="prod", rule_name="KafkaConsumerLagHigh",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "consumer_group": "order-events",
+              "host": "n124-190-055"},
+        dashboard_url="https://grafana.example.com/d/kafka-overview",
+        duration_min=5, problem_id="P-1004"))
+
     _reply_at_oncall(_msg_ids["alert_b"],
                      "\n分析暂无头绪，请查看上方卡片并提供线索。")
 
@@ -1143,8 +1165,8 @@ def run_demo():
               "host": "n124-190-055"},
         dashboard_url="https://grafana.example.com/d/kafka-overview",
         duration_min=5,
-        resolve_note="已知 bug（ISSUE-456），报警规则已静默 7 天",
-        alert_time=_alert_times.get("alert_b")))
+        alert_time=_alert_times.get("alert_b"),
+        problem_id="P-1004"))
 
     _reply_card_in_thread(_msg_ids["alert_b"], _build_status_card(
         "P-1004", "Kafka 消费延迟异常",

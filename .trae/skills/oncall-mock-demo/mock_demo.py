@@ -260,7 +260,7 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
                                 env="", rule_name="", oncall_users=None,
                                 notify_channel="Lark", tags=None,
                                 dashboard_url="", duration_min=0,
-                                resolve_note="", alert_time=None):
+                                alert_time=None, problem_id=""):
     severity_label = severity.capitalize() if severity else "Warning"
 
     now_str = time.strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
@@ -270,8 +270,7 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         resolve_time_text = f"{now_str}（持续{elapsed_min}min）"
     else:
         resolve_time_text = now_str
-    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
-
+    
     elements = []
 
     basic_lines = []
@@ -280,12 +279,14 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
     basic_lines.append(f"**服务:** {service}")
     if rule_name:
         basic_lines.append(f"**规则:** {rule_name}")
-    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    basic_lines.append(f"**报警时间:** {now_str}")
     basic_lines.append(f"**恢复时间:** {resolve_time_text}")
     if oncall_users:
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -298,9 +299,6 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         for k, v in tags.items():
             tag_lines.append(f"  {k}: `{v}`")
         elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
-
-    if resolve_note:
-        elements.append({"tag": "markdown", "content": f"**恢复说明:** {resolve_note}"})
 
     elements.append({"tag": "hr"})
 
@@ -363,7 +361,7 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
                             env="", rule_name="", oncall_users=None,
                             notify_channel="Lark", tags=None,
                             dashboard_url="", duration_min=0,
-                            silence_duration="30 min"):
+                            silence_duration="30 min", problem_id=""):
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -383,6 +381,8 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -819,6 +819,17 @@ def run_demo():
         "⭐⭐⭐⭐⭐ (95%)",
         color="green"))
 
+    _update_card(_msg_ids["alert_a"], _build_alert_card_acked(
+        "ServiceHighErrorRate", "checkoutservice", "critical",
+        "交易服务响应超时，P99 延迟从 200ms 飙升至 5000ms，影响交易链路",
+        alert_id="AG-20001", env="prod", rule_name="ServiceHighErrorRate",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "checkout-7b5f8d9c6-x2k9m",
+              "host": "n128-052-031"},
+        dashboard_url="https://grafana.example.com/d/checkout-overview",
+        duration_min=3,
+        problem_id="P-1001"))
+
     _wait(3)
 
     # ================================================================
@@ -828,6 +839,17 @@ def run_demo():
     _reply(_msg_ids["alert_b"],
            f"🔗 该告警与 {_problem_link('P-1001')} 直接相关 — adservice 超时导致请求失败，成功率下降。\n"
            f"已归并至 {_problem_link('P-1001')}，无需单独处理。")
+
+    _update_card(_msg_ids["alert_b"], _build_alert_card_acked(
+        "ServiceSuccessRateDrop", "checkoutservice", "warning",
+        "交易服务接口成功率从 99.9% 跌至 85.2%",
+        alert_id="AG-20002", env="prod", rule_name="ServiceSuccessRateDrop",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "checkout-7b5f8d9c6-x2k9m",
+              "host": "n128-052-031"},
+        dashboard_url="https://grafana.example.com/d/checkout-overview",
+        duration_min=1,
+        problem_id="P-1001"))
 
     _wait(3)
 
@@ -897,6 +919,17 @@ def run_demo():
         analysis_c_steps,
         "⭐⭐⭐ (65%) — 中等",
         color="orange"))
+
+    _update_card(_msg_ids["alert_c"], _build_alert_card_acked(
+        "ServiceHighLatency", "userservice", "warning",
+        "用户中心服务响应超时，P99 延迟从 150ms 升至 3200ms",
+        alert_id="AG-20003", env="prod", rule_name="ServiceHighLatency",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "userservice-6c4d8b7f5-w3m1n",
+              "host": "n128-055-012"},
+        dashboard_url="https://grafana.example.com/d/userservice-overview",
+        duration_min=0,
+        problem_id="P-1001"))
 
     _wait(4, "继续等待审批...")
 
@@ -1041,6 +1074,17 @@ def run_demo():
         "⭐⭐⭐⭐ (85%)",
         color="orange"))
 
+    _update_card(_msg_ids["alert_c"], _build_alert_card_acked(
+        "ServiceHighLatency", "userservice", "warning",
+        "用户中心服务响应超时，P99 延迟从 150ms 升至 3200ms",
+        alert_id="AG-20003", env="prod", rule_name="ServiceHighLatency",
+        oncall_users=["赵欣欣"],
+        tags={"_env": "prod", "_pod_name": "userservice-6c4d8b7f5-w3m1n",
+              "host": "n128-055-012"},
+        dashboard_url="https://grafana.example.com/d/userservice-overview",
+        duration_min=0,
+        problem_id="P-1002"))
+
     _wait(3)
 
     # ================================================================
@@ -1058,8 +1102,8 @@ def run_demo():
               "host": "n128-052-031"},
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=3,
-        resolve_note=f"P99 延迟已恢复至 180ms，问题 {_problem_link('P-1001')} 已消除",
-        alert_time=_alert_times.get("alert_a")))
+        alert_time=_alert_times.get("alert_a"),
+        problem_id="P-1001"))
     _update_card(_msg_ids["alert_b"], _build_alert_card_resolved(
         "ServiceSuccessRateDrop", "checkoutservice", "warning",
         "交易服务接口成功率从 99.9% 跌至 85.2%",
@@ -1071,8 +1115,8 @@ def run_demo():
               "host": "n128-052-031"},
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=1,
-        resolve_note=f"成功率已恢复至 99.8%，归并至 {_problem_link('P-1001')} 已消除",
-        alert_time=_alert_times.get("alert_b")))
+        alert_time=_alert_times.get("alert_b"),
+        problem_id="P-1001"))
 
     _wait(1)
 

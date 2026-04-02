@@ -291,7 +291,7 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
                                 env="", rule_name="", oncall_users=None,
                                 notify_channel="Lark", tags=None,
                                 dashboard_url="", duration_min=0,
-                                resolve_note="", alert_time=None):
+                                alert_time=None, problem_id=""):
     # 保留原始报警卡片完整内容，仅在"报警时间"下方追加"恢复时间"，header 变绿色 [已恢复]
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -303,7 +303,6 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         resolve_time_text = f"{now_str}（持续{elapsed_min}min）"
     else:
         resolve_time_text = now_str
-    duration_text = f" (已持续{duration_min}分钟)" if duration_min > 0 else ""
 
     elements = []
 
@@ -313,12 +312,14 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
     basic_lines.append(f"**服务:** {service}")
     if rule_name:
         basic_lines.append(f"**规则:** {rule_name}")
-    basic_lines.append(f"**报警时间:** {now_str}{duration_text}")
+    basic_lines.append(f"**报警时间:** {now_str}")
     basic_lines.append(f"**恢复时间:** {resolve_time_text}")
     if oncall_users:
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -332,9 +333,6 @@ def _build_alert_card_resolved(alert_name, service, severity, summary, alert_id=
         for k, v in tags.items():
             tag_lines.append(f"  {k}: `{v}`")
         elements.append({"tag": "markdown", "content": "\n".join(tag_lines)})
-
-    if resolve_note:
-        elements.append({"tag": "markdown", "content": f"**恢复说明:** {resolve_note}"})
 
     elements.append({"tag": "hr"})
 
@@ -397,7 +395,7 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
                             env="", rule_name="", oncall_users=None,
                             notify_channel="Lark", tags=None,
                             dashboard_url="", duration_min=0,
-                            silence_duration="30 min"):
+                            silence_duration="30 min", problem_id=""):
     color_map = {"critical": "red", "warning": "orange", "info": "blue"}
     severity_label = severity.capitalize() if severity else "Warning"
 
@@ -417,6 +415,8 @@ def _build_alert_card_acked(alert_name, service, severity, summary, alert_id="",
         users_str = " ".join(f"👤 {u}" for u in oncall_users)
         basic_lines.append(f"**值班人:** {users_str}")
     basic_lines.append(f"**通知方式:** {notify_channel}")
+    if problem_id:
+        basic_lines.append(f"**所属问题:** {_problem_link(problem_id)}")
     elements.append({"tag": "markdown", "content": "\n".join(basic_lines)})
 
     elements.append({"tag": "hr"})
@@ -970,6 +970,15 @@ def run_demo():
                f"🔗 已归并至 {_problem_link('P-2001')}（报警风暴），中止独立分析，由 {_problem_link('P-2001')} 统一处理。")
     print(f"         ✅ 5 条告警已全部归并")
 
+    for a in ALERTS:
+        _update_card(_msg_ids[a["key"]], _build_alert_card_acked(
+            a["name"], a["service"], a["severity"], a["summary"],
+            alert_id=a["alert_id"], env="prod", rule_name=a["rule_name"],
+            oncall_users=[_ONCALL_PERSON_NAME], tags=a["tags"],
+            dashboard_url=a["dashboard_url"], duration_min=a["duration_min"],
+            problem_id="P-2001"))
+    print(f"         ✅ 5 条告警卡片已更新所属问题为 P-2001")
+
     _wait(1)
 
     # --- P-2001 话题内：静默所有报警规则 ---
@@ -1180,8 +1189,8 @@ def run_demo():
             oncall_users=["赵欣欣"],
             tags=a.get("tags"),
             dashboard_url=a.get("dashboard_url", ""),
-            resolve_note=f"{_problem_link('P-2001')} 问题已消除，告警已恢复",
-            alert_time=_alert_times.get(a["key"])))
+            alert_time=_alert_times.get(a["key"]),
+            problem_id="P-2001"))
         _reply(_msg_ids[a["key"]], f"✅ 已恢复，告警已消除。{_problem_link('P-2001')} 问题已解决。")
     print(f"         ✅ 前 4 条告警卡片已更新为已恢复")
 
@@ -1230,6 +1239,13 @@ def run_demo():
     _reply(alert5_mid,
            f"🔀 已从 {_problem_link('P-2001')} 剔除（根因不同）。\n"
            f"📝 已创建独立问题 {_problem_link('P-2002')}，现在重新分析。")
+
+    _update_card(_msg_ids["alert_5"], _build_alert_card_acked(
+        a5["name"], a5["service"], a5["severity"], a5["summary"],
+        alert_id=a5["alert_id"], env="prod", rule_name=a5["rule_name"],
+        oncall_users=[_ONCALL_PERSON_NAME], tags=a5["tags"],
+        dashboard_url=a5["dashboard_url"], duration_min=a5["duration_min"],
+        problem_id="P-2002"))
 
     _wait(2)
 
@@ -1305,8 +1321,8 @@ def run_demo():
         rule_name="ServiceHighLatency",
         oncall_users=["赵欣欣"],
         tags={"_env": "prod", "host": "n128-055-012"},
-        resolve_note=f"Redis 缓存已清理，P99 延迟恢复至 85ms，{_problem_link('P-2002')} 已消除",
-        alert_time=_alert_times.get("alert_5")))
+        alert_time=_alert_times.get("alert_5"),
+        problem_id="P-2002"))
 
     _reply_card_in_thread(alert5_mid, _build_status_card(
         "P-2002", "Redis 缓存打满导致 productcatalogservice 延迟",

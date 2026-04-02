@@ -638,6 +638,22 @@ const STATUS_TEXT = { open: '未解决', pending: '待执行', recovering: '恢�
 const STATUS_ORDER = { open: 0, pending: 1, recovering: 2, takeover: 3, silenced: 4, resolved: 5 };
 
 let allProblems = [];
+
+// AG ID → 服务名 & 报警名称 的静态映射表（前端维护，后端数据中不携带这些字段）
+const AG_DETAILS = {
+  "AG-2001": { service: "checkoutservice", alert: "ServiceHighErrorRate" },
+  "AG-2002": { service: "checkoutservice", alert: "ServiceSuccessRateDrop" },
+  "AG-2003": { service: "adservice", alert: "PodOOMKilled" },
+  "AG-3001": { service: "redis-cluster", alert: "RedisMasterUnreachable" },
+  "AG-3002": { service: "redis-cluster", alert: "CacheHitRateDrop" },
+  "AG-4001": { service: "payment-gateway", alert: "PaymentService5xxRate" },
+  "AG-5001": { service: "orderservice", alert: "OrderListP99High" },
+  "AG-6001": { service: "k8s-node", alert: "NodeNotReady" },
+  "AG-6002": { service: "multiple", alert: "PodRestartCountHigh" },
+  "AG-6003": { service: "frontend", alert: "ServiceAvailabilityDrop" },
+  "AG-7001": { service: "kafka", alert: "ConsumerLagHigh" },
+};
+
 let currentFilter = 'all';
 let currentDetailId = null;
 let pendingModalAction = null;
@@ -861,15 +877,19 @@ async function renderDetail(problemId) {
 
     <div class="section">
       <div class="section-title">🚨 关联告警 (${alertGroupIds.length})</div>
-      ${alertGroupIds.map(agId => `
+      ${alertGroupIds.map(agId => {
+        const detail = AG_DETAILS[agId] || {};
+        const svc = detail.service || '-';
+        const alertName = detail.alert || '-';
+        return `
         <div class="alert-item">
           <div class="alert-icon firing">🔔</div>
           <div class="alert-info">
-            <div class="alert-name">${agId}</div>
-            <div class="alert-time">Alert Group ID</div>
+            <div class="alert-name">${alertName}</div>
+            <div class="alert-time">${agId} · ${svc}</div>
           </div>
         </div>
-      `).join('')}
+      `}).join('')}
     </div>
 
     ${pendingActions.length > 0 ? `
