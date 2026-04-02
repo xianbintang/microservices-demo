@@ -256,7 +256,7 @@ class ProblemManager:
             logger.info("创建问题 %s: %s", pid, title)
             return problem
 
-    def merge_alert(self, problem_id: str, alert_group_id: str, message_id: str = ""):
+    def merge_alert(self, problem_id: str, alert_group_id: str, message_id: str = "", description: str = ""):
         """将告警归并到已有问题。"""
         with self._lock:
             p = self._problems.get(problem_id)
@@ -269,10 +269,11 @@ class ProblemManager:
             if message_id:
                 p.message_ids[alert_group_id] = message_id
 
+            desc = description or f"告警 {alert_group_id} 已归并至本问题"
             p.events.append(ProblemEvent(
                 timestamp=time.time(),
                 event_type="alert_merged",
-                description=f"告警 {alert_group_id} 已归并至本问题",
+                description=desc,
                 operator="agent",
             ))
             self._save()
@@ -476,6 +477,76 @@ class ProblemManager:
             p.events.append(event)
             self._save()
 
+    def complete_action(self, problem_id: str, action_id: str, result: str = "", operator: str = "agent") -> Optional[Action]:
+        """标记止损动作执行完成（executing → completed）。"""
+        with self._lock:
+            p = self._problems.get(problem_id)
+            if not p:
+                logger.warning("完成动作失败：问题 %s 不存在", problem_id)
+                return None
+
+            action = None
+            for a in p.actions:
+                act = a if isinstance(a, Action) else Action.from_dict(a)
+                if act.id == action_id:
+                    action = act
+                    break
+
+            if not action:
+                logger.warning("完成动作失败：动作 %s 不存在", action_id)
+                return None
+
+            if action.status != ACTION_EXECUTING:
+                logger.warning("完成动作失败：动作 %s 状态为 %s，非 executing", action_id, action.status)
+                return None
+
+            action.status = ACTION_COMPLETED
+            action.result = result or "执行成功"
+
+            for i, a in enumerate(p.actions):
+                aid = a.id if isinstance(a, Action) else a.get("id")
+                if aid == action_id:
+                    p.actions[i] = action
+                    break
+
+            p.events.append(ProblemEvent(
+                timestamp=time.time(),
+                event_type="action_completed",
+                description=f"止损动作「{action.description}」执行完成：{action.result}",
+                operator=operator,
+            ))
+
+            self._save()
+            logger.info("问题 %s 动作 %s 执行完成", problem_id, action_id)
+            return action
+
+    def remove_alert(self, problem_id: str, alert_group_id: str, reason: str = "", operator: str = "agent"):
+        """从问题中剔除告警（纠偏场景：初始归并错误，需要移除）。"""
+        with self._lock:
+            p = self._problems.get(problem_id)
+            if not p:
+                logger.warning("移除告警失败：问题 %s 不存在", problem_id)
+                return
+
+            if alert_group_id not in p.alert_group_ids:
+                logger.warning("移除告警失败：告警 %s 不在问题 %s 中", alert_group_id, problem_id)
+                return
+
+            p.alert_group_ids.remove(alert_group_id)
+            desc = f"告警 {alert_group_id} 已从本问题中移除"
+            if reason:
+                desc += f"（{reason}）"
+
+            p.events.append(ProblemEvent(
+                timestamp=time.time(),
+                event_type="alert_removed",
+                description=desc,
+                operator=operator,
+            ))
+
+            self._save()
+            logger.info("问题 %s 移除告警 %s: %s", problem_id, alert_group_id, reason)
+
     def takeover_problem(self, problem_id: str, operator: str):
         """人工接管问题，Agent 暂停自动操作。"""
         with self._lock:
@@ -531,6 +602,15 @@ class ProblemManager:
     def resolve_problem(self, problem_id: str, operator: str = "agent"):
         """解决问题。"""
         self.update_status(problem_id, STATUS_RESOLVED, operator)
+
+    def reset_all(self):
+        """清空所有问题并重置 ID 计数器（供演示脚本在每次启动前调用）。"""
+        with self._lock:
+            count = len(self._problems)
+            self._problems.clear()
+            self._id_counter = 1000
+            self._save()
+            logger.info("已清空全部 %d 个问题，id_counter 重置为 1000", count)
 
 
 # 全局单例

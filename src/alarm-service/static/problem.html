@@ -652,6 +652,14 @@ const AG_DETAILS = {
   "AG-6002": { service: "multiple", alert: "PodRestartCountHigh" },
   "AG-6003": { service: "frontend", alert: "ServiceAvailabilityDrop" },
   "AG-7001": { service: "kafka", alert: "ConsumerLagHigh" },
+  "AG-20001": { service: "adservice", alert: "ServiceHighErrorRate" },
+  "AG-20002": { service: "checkoutservice", alert: "ServiceSuccessRateDrop" },
+  "AG-20003": { service: "userservice", alert: "ServiceHighLatency" },
+  "AG-30001": { service: "adservice", alert: "ServiceHighErrorRate" },
+  "AG-30002": { service: "checkoutservice", alert: "ServiceSuccessRateDrop" },
+  "AG-30003": { service: "cartservice", alert: "CartServiceTimeout" },
+  "AG-30004": { service: "frontend", alert: "FrontendErrorRate" },
+  "AG-30005": { service: "recommendation", alert: "RecommendSvcLatency" },
 };
 
 let currentFilter = 'all';
@@ -848,7 +856,7 @@ async function renderDetail(problemId) {
   const duration = calcDuration(p.created_at, p.resolved_at);
   const alertGroupIds = p.alert_group_ids || [];
   const actions = p.actions || [];
-  const events = (p.events || []).sort((a, b) => a.timestamp - b.timestamp);
+  const events = (p.events || []).sort((a, b) => b.timestamp - a.timestamp);
 
   const pendingActions = actions.filter(a => a.status === 'pending');
   const otherActions = actions.filter(a => a.status !== 'pending');
@@ -1019,14 +1027,19 @@ function _extractProblemId() {
   return null;
 }
 
+let _initialLoad = true;
+
 async function loadAndRender() {
   allProblems = await fetchProblems();
   renderStats();
   renderList();
-  const pid = _extractProblemId();
-  if (pid) {
-    const target = allProblems.find(p => p.id === pid);
-    if (target) showDetail(pid);
+  if (_initialLoad) {
+    _initialLoad = false;
+    const pid = _extractProblemId();
+    if (pid) {
+      const target = allProblems.find(p => p.id === pid);
+      if (target) showDetail(pid);
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 {
-  "id_counter": 1006,
+  "id_counter": 1008,
   "problems": [
     {
       "id": "P-1001",
@@ -454,6 +454,119 @@
         }
       ],
       "created_at": 1774839905.0,
+      "resolved_at": null,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1007",
+      "title": "营销服务配置变更导致交易超时",
+      "status": "resolved",
+      "root_cause": "adservice 于 15:32 执行配置变更，引入异常促销规则",
+      "alert_group_ids": [
+        "AG-20001",
+        "AG-20002"
+      ],
+      "message_ids": {
+        "AG-20001": "msg_001",
+        "AG-20002": "msg_002"
+      },
+      "actions": [
+        {
+          "id": "ACT-0C808CDB",
+          "description": "删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建",
+          "status": "pending",
+          "approved_by": null,
+          "executed_at": null,
+          "result": null
+        },
+        {
+          "id": "ACT-CAA75390",
+          "description": "删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建",
+          "status": "pending",
+          "approved_by": null,
+          "executed_at": null,
+          "result": null
+        }
+      ],
+      "events": [
+        {
+          "timestamp": 1775116183.231074,
+          "event_type": "created",
+          "description": "问题创建：营销服务配置变更导致交易超时",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116197.511364,
+          "event_type": "alert_merged",
+          "description": "告警 AG-20002 已归并至本问题",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116197.868447,
+          "event_type": "action_added",
+          "description": "新增止损动作: 删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116197.868449,
+          "event_type": "status_changed",
+          "description": "状态从 open 变更为 pending（有止损方案待审批）",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116206.611517,
+          "event_type": "action_added",
+          "description": "新增止损动作: 删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116214.7006028,
+          "event_type": "status_changed",
+          "description": "状态从 pending 变更为 recovering",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116215.0473092,
+          "event_type": "status_changed",
+          "description": "状态从 recovering 变更为 resolved",
+          "operator": "agent"
+        },
+        {
+          "timestamp": 1775116222.482095,
+          "event_type": "status_changed",
+          "description": "状态从 resolved 变更为 resolved",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1775116183.231074,
+      "resolved_at": 1775116215.047308,
+      "silenced_until": null,
+      "taken_over_by": null,
+      "linked_issues": []
+    },
+    {
+      "id": "P-1008",
+      "title": "用户中心 JVM 内存不足导致 GC 风暴",
+      "status": "open",
+      "root_cause": "userservice JVM 堆内存配置不足，频繁 Full GC",
+      "alert_group_ids": [
+        "AG-20003"
+      ],
+      "message_ids": {
+        "AG-20003": "msg_003"
+      },
+      "actions": [],
+      "events": [
+        {
+          "timestamp": 1775116235.1543412,
+          "event_type": "created",
+          "description": "问题创建：用户中心 JVM 内存不足导致 GC 风暴",
+          "operator": "agent"
+        }
+      ],
+      "created_at": 1775116235.1543412,
       "resolved_at": null,
       "silenced_until": null,
       "taken_over_by": null,

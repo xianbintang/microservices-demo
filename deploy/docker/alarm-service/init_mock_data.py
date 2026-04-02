@@ -473,5 +473,17 @@ def main():
     print("=" * 60)
 
 
+def main_silent():
+    """静默模式：写入 Mock 数据到 JSON 文件，不打印到控制台。供 server.py reinit 接口调用。"""
+    problems = build_mock_problems()
+    data = {
+        "id_counter": 1006,
+        "problems": problems,
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 if __name__ == "__main__":
     main()

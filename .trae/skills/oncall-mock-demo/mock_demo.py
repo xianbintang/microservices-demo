@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
+import urllib.request
+import urllib.error
 
 # ============================================================
 # 路径初始化
@@ -90,6 +92,11 @@ def _parse_args():
 MODE, _SCALE = _parse_args()
 STEP_MODE = MODE == "step"
 PROBLEM_BASE_URL = os.environ.get("PROBLEM_BASE_URL", "")
+_default_api_base = "http://localhost:9095"
+if PROBLEM_BASE_URL:
+    _parsed = urllib.parse.urlparse(PROBLEM_BASE_URL)
+    _default_api_base = f"{_parsed.scheme}://{_parsed.netloc}"
+PROBLEM_API_BASE = os.environ.get("PROBLEM_API_BASE", _default_api_base)
 
 
 def _problem_link(pid: str) -> str:
@@ -99,6 +106,21 @@ def _problem_link(pid: str) -> str:
         applink = f"https://applink.feishu.cn/client/web_url/open?mode=sidebar-semi&url={quote(raw_url, safe='')}"
         return f"[{pid}]({applink})"
     return f"**{pid}**"
+
+
+def _api_call(method: str, path: str, body: dict = None) -> dict:
+    """调用 alarm-service REST API，返回 JSON 响应。失败时打印警告并返回空 dict。"""
+    url = f"{PROBLEM_API_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result
+    except Exception as e:
+        print(f"         ⚠️ API 调用失败 {method} {path}: {e}")
+        return {}
 
 
 _msg_ids = {}
@@ -720,6 +742,16 @@ def run_demo():
     _start_time = time.time()
     _alert_times = {}
 
+    # — 方案B：先清空再导入初始 Mock 数据，确保每次演示从干净状态开始 —
+    print("  🔄 重置 Problem 数据...")
+    _api_call("POST", "/api/problems/reset")
+    _api_call("POST", "/api/problems/reinit")
+    print("  ✅ Problem 数据已重置（初始 Mock 数据已导入）")
+
+    # 动态 Problem ID（由 API 创建后赋值）
+    pid_1 = ""  # 对应原来的 P-1001
+    pid_2 = ""  # 对应原来的 P-1002
+
     # ================================================================
     # 🚨 告警 A 到达
     # ================================================================
@@ -761,7 +793,7 @@ def run_demo():
     _msg_ids["analysis_a"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_analysis_card_thinking(
-            "P-1001", "交易服务响应超时", analysis_a_steps_v1))
+            pid_1 or "分析中", "交易服务响应超时", analysis_a_steps_v1))
 
     _wait(5, "Agent 正在查询 Tempo 链路 + 变更记录...")
 
@@ -808,13 +840,24 @@ def run_demo():
         "3. ✅ 变更记录: adservice 于 15:32 执行配置变更 CHG-2026-0331-007\n"
         "4. ✅ 该变更引入异常促销规则计算逻辑 → 处理耗时 50ms→4800ms"
     )
+
+    # — 通过 API 创建 Problem，获取动态 ID —
+    resp = _api_call("POST", "/api/problems", {
+        "title": "营销服务配置变更导致交易超时",
+        "root_cause": "adservice 于 15:32 执行配置变更（CHG-2026-0331-007），引入异常促销规则计算逻辑",
+        "alert_group_id": "AG-20001",
+        "message_id": _msg_ids.get("alert_a", ""),
+    })
+    pid_1 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_1}")
+
     _update_card(_msg_ids["analysis_a"], _build_analysis_card_done(
-        "P-1001", "营销服务配置变更导致交易超时",
+        pid_1, "营销服务配置变更导致交易超时",
         "**根因定位**：adservice 于 15:32 执行配置变更（CHG-2026-0331-007），"
         "引入异常促销规则计算逻辑，处理耗时从 50ms 飙升至 4800ms，"
         "导致下游 checkoutservice 调用超时。\n\n"
         "**影响范围**：checkoutservice → adservice 调用链路\n"
-        f"📝 已创建问题 {_problem_link('P-1001')}",
+        f"📝 已创建问题 {_problem_link(pid_1)}",
         analysis_a_steps_done,
         "⭐⭐⭐⭐⭐ (95%)",
         color="green"))
@@ -828,17 +871,18 @@ def run_demo():
               "host": "n128-052-031"},
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=3,
-        problem_id="P-1001"))
+        problem_id=pid_1))
 
     _wait(3)
 
     # ================================================================
     # 🔗 告警 B 归并
     # ================================================================
-    _pause("🔗 告警B归并到 P-1001")
+    _pause(f"🔗 告警B归并到 {pid_1}")
     _reply(_msg_ids["alert_b"],
-           f"🔗 该告警与 {_problem_link('P-1001')} 直接相关 — adservice 超时导致请求失败，成功率下降。\n"
-           f"已归并至 {_problem_link('P-1001')}，无需单独处理。")
+           f"🔗 该告警与 {_problem_link(pid_1)} 直接相关 — adservice 超时导致请求失败，成功率下降。\n"
+           f"已归并至 {_problem_link(pid_1)}，无需单独处理。")
+    _api_call("POST", f"/api/problems/{pid_1}/merge", {"alert_group_id": "AG-20002", "message_id": _msg_ids.get("alert_b", ""), "description": "checkoutservice 的 ServiceSuccessRateDrop 告警 (AG-20002) 归并至本问题：与 adservice 超时存在因果关联"})
 
     _update_card(_msg_ids["alert_b"], _build_alert_card_acked(
         "ServiceSuccessRateDrop", "checkoutservice", "warning",
@@ -849,7 +893,7 @@ def run_demo():
               "host": "n128-052-031"},
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=1,
-        problem_id="P-1001"))
+        problem_id=pid_1))
 
     _wait(3)
 
@@ -860,9 +904,17 @@ def run_demo():
     _msg_ids["approval"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_approval_card(
-            "P-1001", "营销服务配置变更导致交易超时",
+            pid_1, "营销服务配置变更导致交易超时",
             "adservice 配置变更（CHG-2026-0331-007）引入异常促销规则",
             "删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建（预计恢复 30s）"))
+    _api_call("POST", f"/api/problems/{pid_1}/actions", {"description": "删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建"})
+    _action_resp = _api_call("GET", f"/api/problems/{pid_1}")
+    _action_id_1 = ""
+    if _action_resp:
+        for _act in _action_resp.get("actions", []):
+            if _act.get("status") == "pending":
+                _action_id_1 = _act["id"]
+                break
 
     _wait(5, "等待值班人审批...")
 
@@ -901,24 +953,25 @@ def run_demo():
     analysis_c_steps = (
         "1. ✅ Tempo: userservice 内部处理耗时正常\n"
         "2. ✅ userservice 与 checkoutservice 共享下游依赖 adservice\n"
-        f"3. ✅ 时间窗口与 {_problem_link('P-1001')} 高度重合"
+        f"3. ✅ 时间窗口与 {_problem_link(pid_1)} 高度重合"
     )
     _msg_ids["analysis_c"] = _reply_card_in_thread(
         _msg_ids["alert_c"],
         _build_analysis_card_thinking(
-            "P-1001 (归并)", "userservice 超时初判", analysis_c_steps))
+            f"{pid_1} (归并)", "userservice 超时初判", analysis_c_steps))
 
     _wait(4, "Agent 分析告警C...")
 
     _update_card(_msg_ids["analysis_c"], _build_analysis_card_done(
-        "P-1001 (归并)", "userservice 超时 → 初判归并 P-1001",
+        f"{pid_1} (归并)", f"userservice 超时 → 初判归并 {pid_1}",
         "**分析结果**：userservice 与 checkoutservice 共享下游依赖 adservice，"
         "时间窗口高度重合。\n\n"
-        f"🔗 已归并至 {_problem_link('P-1001')}，统一处理。\n"
+        f"🔗 已归并至 {_problem_link(pid_1)}，统一处理。\n"
         "_⚠️ 置信度中等，将在止损完成后验证。_",
         analysis_c_steps,
         "⭐⭐⭐ (65%) — 中等",
         color="orange"))
+    _api_call("POST", f"/api/problems/{pid_1}/merge", {"alert_group_id": "AG-20003", "message_id": _msg_ids.get("alert_c", ""), "description": "userservice 的 ServiceHighLatency 告警 (AG-20003) 初判归并至本问题：疑似受 adservice 超时影响"})
 
     _update_card(_msg_ids["alert_c"], _build_alert_card_acked(
         "ServiceHighLatency", "userservice", "warning",
@@ -929,7 +982,7 @@ def run_demo():
               "host": "n128-055-012"},
         dashboard_url="https://grafana.example.com/d/userservice-overview",
         duration_min=0,
-        problem_id="P-1001"))
+        problem_id=pid_1))
 
     _wait(4, "继续等待审批...")
 
@@ -937,8 +990,10 @@ def run_demo():
     # ✅ 审批通过 → 执行止损
     # ================================================================
     _pause("✅ 值班人批准了审批")
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/approve", {"operator": "值班人"})
     _update_card(_msg_ids["approval"], _build_approval_result_card(
-        "P-1001", "营销服务配置变更导致交易超时",
+        pid_1, "营销服务配置变更导致交易超时",
         "adservice 配置变更（CHG-2026-0331-007）引入异常促销规则",
         "删除异常 Pod adservice-7d8f6b9c4-x2k9m，触发 K8s 自动重建",
         result="approved"))
@@ -952,7 +1007,7 @@ def run_demo():
     _msg_ids["exec_card"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
         _build_execution_card_running(
-            "P-1001", "删除异常 Pod 触发重建", exec_steps_1))
+            pid_1, "删除异常 Pod 触发重建", exec_steps_1))
 
     _wait(4, "K8s 正在重建 Pod...")
 
@@ -972,8 +1027,12 @@ def run_demo():
     )
     _update_card(_msg_ids["exec_card"],
                  _build_execution_card_done(
-                     "P-1001", "删除异常 Pod 触发重建",
+                     pid_1, "删除异常 Pod 触发重建",
                      exec_result, exec_steps_done))
+    if _action_id_1:
+        _api_call("POST", f"/api/problems/{pid_1}/actions/{_action_id_1}/complete", {"result": "Pod 已重建，adservice 响应恢复至 60ms"})
+    _api_call("POST", f"/api/problems/{pid_1}/status", {"status": "recovering"})
+    _api_call("POST", f"/api/problems/{pid_1}/events", {"event_type": "execution_done", "description": "止损执行完成：异常 Pod 已删除并自动重建，adservice 响应从 4800ms 恢复至 60ms"})
 
     _wait(3)
 
@@ -981,6 +1040,7 @@ def run_demo():
     # 📉 恢复验证
     # ================================================================
     _pause("📉 恢复验证第 1 轮")
+    _api_call("POST", f"/api/problems/{pid_1}/events", {"event_type": "recovery_check", "description": "恢复验证第 1 轮：adservice P99=1200ms（↓）、成功率 92.1%（↑），持续观察中"})
     round1_time = time.strftime('%H:%M:%S')
     verify_round1 = (
         f"**第 1 轮** ({round1_time})  ·  止损完成后 ~30s\n\n"
@@ -993,11 +1053,12 @@ def run_demo():
     )
     _msg_ids["recovery_card"] = _reply_card_in_thread(
         _msg_ids["alert_a"],
-        _build_recovery_card("P-1001", "恢复验证", verify_round1, "verifying"))
+        _build_recovery_card(pid_1, "恢复验证", verify_round1, "verifying"))
 
     _wait(8, "等待指标进一步恢复...")
 
     _pause("📉 恢复验证第 2 轮")
+    _api_call("POST", f"/api/problems/{pid_1}/events", {"event_type": "recovery_check", "description": "恢复验证第 2 轮：告警 A/B 已恢复正常；告警 C (userservice) 未恢复，疑似独立问题"})
     round2_time = time.strftime('%H:%M:%S')
     verify_rounds_all = (
         f"**第 1 轮** ({round1_time})  ·  止损完成后 ~30s\n\n"
@@ -1017,32 +1078,33 @@ def run_demo():
         "🔴 C 仍然异常 — 止损方案对 C 无效"
     )
     _update_card(_msg_ids["recovery_card"],
-                 _build_recovery_card("P-1001", "恢复验证",
+                 _build_recovery_card(pid_1, "恢复验证",
                                       verify_rounds_all, "partial"))
 
-    _wait(3, "Agent 准备将C从P-1001移除...")
+    _wait(3, f"Agent 准备将C从{pid_1}移除...")
 
     # 告警A话题：通知C被移除
-    _pause("📤 告警A话题：通知C已移除P-1001")
+    _pause(f"📤 告警A话题：通知C已移除{pid_1}")
+    _api_call("POST", f"/api/problems/{pid_1}/remove_alert", {"alert_group_id": "AG-20003", "reason": "恢复验证发现 userservice 告警未恢复，初始归并判断有误，需独立分析"})
     _reply(_msg_ids["alert_a"],
            "📤 恢复验证发现告警C（userservice）未恢复，"
            "判断初始归并有误。\n"
-           f"已将告警C从 {_problem_link('P-1001')} 移除，将对C进行独立分析。")
+           f"已将告警C从 {_problem_link(pid_1)} 移除，将对C进行独立分析。")
 
     _wait(2)
 
     # 告警C话题：说明归并错误，重新分析
     _pause("⚡ 告警C话题：说明归并错误，重新分析")
     _reply(_msg_ids["alert_c"],
-           f"⚡ **{_problem_link('P-1001')} 已止损成功，但本告警未恢复。**\n"
+           f"⚡ **{_problem_link(pid_1)} 已止损成功，但本告警未恢复。**\n"
            "说明初始归并判断有误（与 adservice 配置变更无关），"
-           f"现在从 {_problem_link('P-1001')} 移除，重新进行独立 RCA 分析。")
+           f"现在从 {_problem_link(pid_1)} 移除，重新进行独立 RCA 分析。")
 
     _wait(2)
 
     # 告警C话题：发新的分析卡片
     correction_steps_thinking = (
-        f"1. ✅ 排除 adservice 配置变更（{_problem_link('P-1001')} 已修复，C 未恢复）\n"
+        f"1. ✅ 排除 adservice 配置变更（{_problem_link(pid_1)} 已修复，C 未恢复）\n"
         "2. ✅ Prometheus: userservice CPU > 95%\n"
         "3. ✅ Loki: 大量 `GC overhead limit exceeded` 警告\n"
         "4. ⏳ 关联 JVM 配置和近期变更..."
@@ -1057,18 +1119,30 @@ def run_demo():
     # 更新为最终RCA
     _pause("🧠 告警C第二次RCA完成")
     correction_steps_done = (
-        f"1. ✅ 排除 adservice 配置变更（{_problem_link('P-1001')} 已修复，C 未恢复）\n"
+        f"1. ✅ 排除 adservice 配置变更（{_problem_link(pid_1)} 已修复，C 未恢复）\n"
         "2. ✅ Prometheus: userservice CPU > 95%，内存使用 98.7%\n"
         "3. ✅ Loki: 大量 `GC overhead limit exceeded` 和 `Full GC` 日志\n"
         "4. ✅ JVM 配置: -Xmx=256m（不足），上次扩容后未同步调整\n"
         "5. ✅ 结论: JVM 堆内存不足 → 频繁 Full GC → 服务超时"
     )
+
+    # — 通过 API 创建第二个 Problem —
+    resp = _api_call("POST", "/api/problems", {
+        "title": "用户中心 JVM 内存不足导致 GC 风暴",
+        "root_cause": "userservice JVM 堆内存配置不足（-Xmx=256m），频繁 Full GC",
+        "alert_group_id": "AG-20003",
+        "message_id": _msg_ids.get("alert_c", ""),
+    })
+    pid_2 = resp.get("problem", {}).get("id", "P-UNKNOWN")
+    print(f"         📋 Problem 已创建: {pid_2}")
+    _api_call("POST", f"/api/problems/{pid_2}/events", {"event_type": "alert_merged", "description": "userservice 的 ServiceHighLatency 告警 (AG-20003) 从 " + pid_1 + " 纠偏移入本问题：独立根因，非 adservice 超时连锁影响"})
+
     _update_card(_msg_ids["analysis_c_v2"], _build_analysis_card_done(
-        "P-1002 (新建)", "用户中心 JVM 内存不足导致 GC 风暴",
+        f"{pid_2} (新建)", "用户中心 JVM 内存不足导致 GC 风暴",
         "**根因定位**：userservice JVM 堆内存配置不足（-Xmx=256m），"
         "随业务量增长导致频繁 Full GC，服务响应超时。\n\n"
-        f"**与 {_problem_link('P-1001')} 无关**：adservice 配置变更已修复，本告警独立于 {_problem_link('P-1001')}。\n\n"
-        f"📝 创建新问题 {_problem_link('P-1002')}：「用户中心 JVM 内存不足导致 GC 风暴」\n"
+        f"**与 {_problem_link(pid_1)} 无关**：adservice 配置变更已修复，本告警独立于 {_problem_link(pid_1)}。\n\n"
+        f"📝 创建新问题 {_problem_link(pid_2)}：「用户中心 JVM 内存不足导致 GC 风暴」\n"
         "_正在生成止损方案..._",
         correction_steps_done,
         "⭐⭐⭐⭐ (85%)",
@@ -1083,7 +1157,7 @@ def run_demo():
               "host": "n128-055-012"},
         dashboard_url="https://grafana.example.com/d/userservice-overview",
         duration_min=0,
-        problem_id="P-1002"))
+        problem_id=pid_2))
 
     _wait(3)
 
@@ -1103,7 +1177,7 @@ def run_demo():
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=3,
         alert_time=_alert_times.get("alert_a"),
-        problem_id="P-1001"))
+        problem_id=pid_1))
     _update_card(_msg_ids["alert_b"], _build_alert_card_resolved(
         "ServiceSuccessRateDrop", "checkoutservice", "warning",
         "交易服务接口成功率从 99.9% 跌至 85.2%",
@@ -1116,26 +1190,27 @@ def run_demo():
         dashboard_url="https://grafana.example.com/d/checkout-overview",
         duration_min=1,
         alert_time=_alert_times.get("alert_b"),
-        problem_id="P-1001"))
+        problem_id=pid_1))
 
     _wait(1)
 
     # ================================================================
     # 🎉 P-1001 消除
     # ================================================================
-    _pause("🎉 P-1001 消除")
+    _pause(f"🎉 {pid_1} 消除")
+    _api_call("POST", f"/api/problems/{pid_1}/resolve")
     _reply_card_in_thread(_msg_ids["alert_a"], _build_status_card(
-        "P-1001", "营销服务配置变更导致交易超时",
+        pid_1, "营销服务配置变更导致交易超时",
         "resolved",
         "告警A: checkoutservice P99=180ms ✅\n"
         "告警B: checkoutservice 成功率 99.8% ✅\n"
-        f"告警C: 已移除（独立为 {_problem_link('P-1002')}）\n\n"
+        f"告警C: 已移除（独立为 {_problem_link(pid_2)}）\n\n"
         "处理耗时：约 12 分钟"))
 
     _wait(1)
 
     _reply(_msg_ids["alert_b"],
-           f"🎉 {_problem_link('P-1001')} 已消除，交易服务成功率已恢复至 99.8%。")
+           f"🎉 {_problem_link(pid_1)} 已消除，交易服务成功率已恢复至 99.8%。")
 
     # ============================================================
     total = time.time() - _start_time

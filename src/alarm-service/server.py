@@ -887,6 +887,139 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
             self._handle_reject_action(problem_id, action_id, operator)
             return
 
+        # --- Problem API: 写操作（创建 / 归并 / 状态变更 / 重置 / 重新初始化） ---
+        merge_match = re.match(r"^/api/problems/(P-\d+)/merge$", self.path)
+        status_match = re.match(r"^/api/problems/(P-\d+)/status$", self.path)
+        root_cause_match = re.match(r"^/api/problems/(P-\d+)/root_cause$", self.path)
+        action_match = re.match(r"^/api/problems/(P-\d+)/actions$", self.path)
+        resolve_match = re.match(r"^/api/problems/(P-\d+)/resolve$", self.path)
+        complete_action_match = re.match(r"^/api/problems/(P-\d+)/actions/([^/]+)/complete$", self.path)
+        remove_alert_match = re.match(r"^/api/problems/(P-\d+)/remove_alert$", self.path)
+        add_event_match = re.match(r"^/api/problems/(P-\d+)/events$", self.path)
+
+        if self.path == "/api/problems/reset":
+            self._handle_reset_problems()
+            return
+
+        if self.path == "/api/problems/reinit":
+            self._handle_reinit_problems()
+            return
+
+        if self.path == "/api/problems" and not approve_match and not reject_match:
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_create_problem(body)
+                return
+
+        if merge_match:
+            problem_id = merge_match.group(1)
+            body = {}
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception:
+                    pass
+            self._handle_merge_alert(problem_id, body)
+            return
+
+        if status_match:
+            problem_id = status_match.group(1)
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_update_status(problem_id, body)
+                return
+            self._send_json(400, {"error": "empty body"})
+            return
+
+        if root_cause_match:
+            problem_id = root_cause_match.group(1)
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_update_root_cause(problem_id, body)
+                return
+            self._send_json(400, {"error": "empty body"})
+            return
+
+        if action_match:
+            problem_id = action_match.group(1)
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_add_action(problem_id, body)
+                return
+            self._send_json(400, {"error": "empty body"})
+            return
+
+        if resolve_match:
+            problem_id = resolve_match.group(1)
+            operator = "agent"
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    operator = body.get("operator", "agent")
+                except Exception:
+                    pass
+            manager = pm.get_manager()
+            manager.resolve_problem(problem_id, operator)
+            problem = manager.get_problem(problem_id)
+            if problem:
+                self._send_json(200, {"message": f"问题 {problem_id} 已解决", "problem": problem.to_dict()})
+            else:
+                self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+            return
+
+        if complete_action_match:
+            problem_id, action_id = complete_action_match.groups()
+            body = {}
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception:
+                    pass
+            self._handle_complete_action(problem_id, action_id, body)
+            return
+
+        if remove_alert_match:
+            problem_id = remove_alert_match.group(1)
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_remove_alert(problem_id, body)
+                return
+            self._send_json(400, {"error": "empty body"})
+            return
+
+        if add_event_match:
+            problem_id = add_event_match.group(1)
+            if content_length > 0:
+                try:
+                    body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception as e:
+                    self._send_json(400, {"error": f"invalid JSON: {e}"})
+                    return
+                self._handle_add_event(problem_id, body)
+                return
+            self._send_json(400, {"error": "empty body"})
+            return
+
         # --- 原有 Webhook API ---
         if content_length == 0:
             self._send_json(400, {"error": "empty body"})
@@ -981,6 +1114,158 @@ class AlarmServiceHandler(BaseHTTPRequestHandler):
             "problem_status": problem.status if problem else "unknown",
         })
 
+    # --- Problem API: 写操作 handler ---
+
+    def _handle_create_problem(self, body: dict):
+        """POST /api/problems — 创建新问题。"""
+        title = body.get("title", "")
+        if not title:
+            self._send_json(400, {"error": "title 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        problem = manager.create_problem(
+            title=title,
+            root_cause=body.get("root_cause", ""),
+            alert_group_id=body.get("alert_group_id", ""),
+            message_id=body.get("message_id", ""),
+        )
+        self._send_json(201, {"message": f"问题 {problem.id} 已创建", "problem": problem.to_dict()})
+
+    def _handle_merge_alert(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/merge — 归并告警到已有问题。"""
+        alert_group_id = body.get("alert_group_id", "")
+        if not alert_group_id:
+            self._send_json(400, {"error": "alert_group_id 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        manager.merge_alert(problem_id, alert_group_id, body.get("message_id", ""), body.get("description", ""))
+        problem = manager.get_problem(problem_id)
+        if problem:
+            self._send_json(200, {"message": f"告警 {alert_group_id} 已归并至 {problem_id}", "problem": problem.to_dict()})
+        else:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+
+    def _handle_update_status(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/status — 更新问题状态。"""
+        status = body.get("status", "")
+        if not status:
+            self._send_json(400, {"error": "status 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        manager.update_status(problem_id, status, body.get("operator", "agent"))
+        problem = manager.get_problem(problem_id)
+        if problem:
+            self._send_json(200, {"message": f"问题 {problem_id} 状态已更新为 {status}", "problem": problem.to_dict()})
+        else:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+
+    def _handle_update_root_cause(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/root_cause — 更新根因描述。"""
+        root_cause = body.get("root_cause", "")
+        if not root_cause:
+            self._send_json(400, {"error": "root_cause 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        manager.update_root_cause(problem_id, root_cause, body.get("operator", "agent"))
+        problem = manager.get_problem(problem_id)
+        if problem:
+            self._send_json(200, {"message": f"问题 {problem_id} 根因已更新", "problem": problem.to_dict()})
+        else:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+
+    def _handle_add_action(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/actions — 添加止损动作。"""
+        description = body.get("description", "")
+        if not description:
+            self._send_json(400, {"error": "description 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        action = manager.add_action(problem_id, description, body.get("action_id", ""))
+        if action:
+            problem = manager.get_problem(problem_id)
+            self._send_json(201, {"message": f"动作已添加至 {problem_id}", "action": action.to_dict(),
+                                  "problem": problem.to_dict() if problem else None})
+        else:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+
+    def _handle_reset_problems(self):
+        """POST /api/problems/reset — 清空所有问题，重置 ID 计数器。"""
+        manager = pm.get_manager()
+        manager.reset_all()
+        self._send_json(200, {"message": "所有问题已清空，ID 计数器已重置"})
+
+    def _handle_reinit_problems(self):
+        """POST /api/problems/reinit — 重新导入初始 Mock 数据。"""
+        try:
+            import init_mock_data
+            init_mock_data.main_silent()
+            manager = pm.get_manager()
+            manager._load()
+            self._send_json(200, {
+                "message": "初始 Mock 数据已重新导入",
+                "count": len(manager.get_all_problems()),
+            })
+        except Exception as e:
+            logger.error("reinit 失败: %s", e, exc_info=True)
+            self._send_json(500, {"error": f"reinit 失败: {e}"})
+
+    def _handle_complete_action(self, problem_id: str, action_id: str, body: dict):
+        """POST /api/problems/:id/actions/:aid/complete — 标记动作执行完成。"""
+        manager = pm.get_manager()
+        result = body.get("result", "")
+        operator = body.get("operator", "agent")
+        action = manager.complete_action(problem_id, action_id, result, operator)
+        if action:
+            problem = manager.get_problem(problem_id)
+            self._send_json(200, {
+                "message": f"动作 {action_id} 已完成",
+                "action": action.to_dict(),
+                "problem": problem.to_dict() if problem else None,
+            })
+        else:
+            self._send_json(404, {"error": f"动作 {action_id} 不存在或状态不正确"})
+
+    def _handle_remove_alert(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/remove_alert — 从问题中剔除告警。"""
+        alert_group_id = body.get("alert_group_id", "")
+        if not alert_group_id:
+            self._send_json(400, {"error": "alert_group_id 不能为空"})
+            return
+
+        manager = pm.get_manager()
+        reason = body.get("reason", "")
+        manager.remove_alert(problem_id, alert_group_id, reason, body.get("operator", "agent"))
+        problem = manager.get_problem(problem_id)
+        if problem:
+            self._send_json(200, {
+                "message": f"告警 {alert_group_id} 已从 {problem_id} 移除",
+                "problem": problem.to_dict(),
+            })
+        else:
+            self._send_json(404, {"error": f"问题 {problem_id} 不存在"})
+
+    def _handle_add_event(self, problem_id: str, body: dict):
+        """POST /api/problems/:id/events — 添加自定义时间线事件。"""
+        description = body.get("description", "")
+        if not description:
+            self._send_json(400, {"error": "description 不能为空"})
+            return
+
+        event = pm.ProblemEvent(
+            timestamp=time.time(),
+            event_type=body.get("event_type", "custom"),
+            description=description,
+            operator=body.get("operator", "agent"),
+        )
+        manager = pm.get_manager()
+        manager.add_event(problem_id, event)
+        self._send_json(201, {"message": f"事件已添加至 {problem_id}"})
+
     # --- 静态文件服务 ---
 
     def _serve_static_file(self):
@@ -1057,6 +1342,14 @@ def main():
     logger.info("  GET  /api/problems/:id         — Problem 详情 API")
     logger.info("  POST /api/problems/:id/actions/:aid/approve  — 审批通过")
     logger.info("  POST /api/problems/:id/actions/:aid/reject   — 取消动作")
+    logger.info("  POST /api/problems                           — 创建问题")
+    logger.info("  POST /api/problems/:id/merge                 — 归并告警")
+    logger.info("  POST /api/problems/:id/status                — 更新状态")
+    logger.info("  POST /api/problems/:id/root_cause            — 更新根因")
+    logger.info("  POST /api/problems/:id/actions               — 添加动作")
+    logger.info("  POST /api/problems/:id/resolve               — 解决问题")
+    logger.info("  POST /api/problems/reset                     — 清空重置")
+    logger.info("  POST /api/problems/reinit                    — 重新初始化 Mock 数据")
     logger.info("  GET  /static/*                 — H5 静态文件")
     logger.info("  GET  /health                   — 健康检查")
     logger.info("  H5 页面: http://0.0.0.0:%d/static/problem.html", PORT)
